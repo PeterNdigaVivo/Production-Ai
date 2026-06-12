@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: detection-engine
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.detectionEngine.replicas }}
+  selector: { matchLabels: { app: detection-engine } }
+  template:
+    metadata: { labels: { app: detection-engine } }
+    spec:
+      {{- if .Values.detectionEngine.gpu }}
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      {{- end }}
+      containers:
+        - name: detection-engine
+          image: "{{ .Values.image.registry }}/detection-engine:{{ .Values.image.tag }}"
+          envFrom: [{ secretRef: { name: backend-env } }]
+          resources: {{- toYaml .Values.detectionEngine.resources | nindent 12 }}
+          volumeMounts: [{ name: models, mountPath: /models }]
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: models-pvc }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models-pvc
+  namespace: {{ .Values.global.namespace }}
+spec:
+  accessModes: [ReadOnlyMany]
+  resources: { requests: { storage: 20Gi } }
+  storageClassName: {{ .Values.global.storageClass }}

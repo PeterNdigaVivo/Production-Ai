@@ -1,0 +1,63 @@
+image:
+  registry: ghcr.io/yourorg
+  tag: latest
+  pullPolicy: IfNotPresent
+
+global:
+  namespace: production-ai
+  storageClass: standard
+
+backend:
+  replicas: 2
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { cpu: 1,    memory: 2Gi   }
+  hpa:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+detectionEngine:
+  replicas: 1
+  gpu: true
+  resources:
+    requests: { cpu: 1, memory: 4Gi }
+    limits:
+      "nvidia.com/gpu": 1
+      cpu: 4
+      memory: 16Gi
+
+trackingEngine:
+  replicas: 1
+  resources:
+    requests: { cpu: 500m, memory: 1Gi }
+    limits:   { cpu: 2,    memory: 4Gi }
+
+videoIngestion:
+  replicas: 1
+  gpu: false   # set true for NVDEC
+
+activityEngine: { replicas: 1 }
+eventEngine:    { replicas: 1 }
+celeryWorker:   { replicas: 2 }
+
+postgres:
+  enabled: true
+  storage: 100Gi
+timescaledb:
+  enabled: true
+  storage: 500Gi
+redis:
+  enabled: true
+  persistence: true
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: production-ai.example.com
+      paths: [{path: /, pathType: Prefix}]
+  tls:
+    - secretName: production-ai-tls
+      hosts: [production-ai.example.com]

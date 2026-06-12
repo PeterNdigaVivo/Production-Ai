@@ -1,0 +1,21 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "schemaVersion": 39,
+  "title": "Production-AI Overview",
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Backend up",
+      "targets": [{"expr": "up{job=\"backend\"}"}],
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Detection FPS (avg)",
+      "targets": [{"expr": "rate(detection_inferences_total[1m])"}],
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4}
+    }
+  ]
+}

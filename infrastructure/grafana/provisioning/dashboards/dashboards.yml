@@ -1,0 +1,6 @@
+apiVersion: 1
+providers:
+  - name: production-ai
+    folder: Production-AI
+    type: file
+    options: { path: /var/lib/grafana/dashboards }

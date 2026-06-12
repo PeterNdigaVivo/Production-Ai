@@ -1,0 +1,215 @@
+version: "3.9"
+
+# Development compose. For production overrides see docker-compose.prod.yml.
+
+x-common-env: &common-env
+  env_file: .env
+
+networks:
+  paimnet:
+    driver: bridge
+
+volumes:
+  pg_data:
+  ts_data:
+  redis_data:
+  mlflow_data:
+  prom_data:
+  grafana_data:
+  loki_data:
+  models:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+    networks: [paimnet]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      retries: 5
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: production_ai_ts
+    volumes:
+      - ts_data:/var/lib/postgresql/data
+    ports: ["5433:5432"]
+    networks: [paimnet]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis_data:/data]
+    ports: ["6379:6379"]
+    networks: [paimnet]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  backend:
+    build:
+      context: ./services/backend
+      dockerfile: Dockerfile
+    <<: *common-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis:    {condition: service_healthy}
+    volumes:
+      - ./services/backend:/app
+    ports: ["8000:8000"]
+    networks: [paimnet]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  celery-worker:
+    build:
+      context: ./services/backend
+      dockerfile: Dockerfile
+    <<: *common-env
+    depends_on: [redis, postgres]
+    volumes:
+      - ./services/backend:/app
+    networks: [paimnet]
+    command: celery -A app.workers.celery_app worker -l info --concurrency=4
+
+  celery-beat:
+    build:
+      context: ./services/backend
+      dockerfile: Dockerfile
+    <<: *common-env
+    depends_on: [redis, postgres]
+    volumes:
+      - ./services/backend:/app
+    networks: [paimnet]
+    command: celery -A app.workers.celery_app beat -l info
+
+  video-ingestion:
+    build:
+      context: ./services/video-ingestion
+    <<: *common-env
+    depends_on: [redis]
+    volumes:
+      - ./services/video-ingestion:/app
+    networks: [paimnet]
+    # GPU optional in dev; uncomment for NVDEC
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{driver: nvidia, count: 1, capabilities: [gpu, video]}]
+
+  detection-engine:
+    build:
+      context: ./services/detection-engine
+    <<: *common-env
+    depends_on: [redis]
+    volumes:
+      - ./services/detection-engine:/app
+      - models:/models
+    networks: [paimnet]
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+
+  tracking-engine:
+    build:
+      context: ./services/tracking-engine
+    <<: *common-env
+    depends_on: [redis]
+    volumes:
+      - ./services/tracking-engine:/app
+    networks: [paimnet]
+
+  activity-engine:
+    build:
+      context: ./services/activity-engine
+    <<: *common-env
+    depends_on: [redis]
+    volumes:
+      - ./services/activity-engine:/app
+    networks: [paimnet]
+
+  event-engine:
+    build:
+      context: ./services/event-engine
+    <<: *common-env
+    depends_on: [redis, postgres]
+    volumes:
+      - ./services/event-engine:/app
+    networks: [paimnet]
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+      NEXT_PUBLIC_WS_URL:  ${NEXT_PUBLIC_WS_URL}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports: ["3000:3000"]
+    networks: [paimnet]
+    command: npm run dev
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    restart: unless-stopped
+    environment:
+      MLFLOW_TRACKING_URI: sqlite:////mlflow/mlflow.db
+    volumes: [mlflow_data:/mlflow]
+    ports: ["5000:5000"]
+    networks: [paimnet]
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prom_data:/prometheus
+    ports: ["9090:9090"]
+    networks: [paimnet]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3001:3000"]
+    networks: [paimnet]
+
+  loki:
+    image: grafana/loki:3.1.1
+    restart: unless-stopped
+    volumes: [loki_data:/loki]
+    ports: ["3100:3100"]
+    networks: [paimnet]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on: [backend, frontend]
+    volumes:
+      - ./infrastructure/nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    ports: ["80:80"]
+    networks: [paimnet]

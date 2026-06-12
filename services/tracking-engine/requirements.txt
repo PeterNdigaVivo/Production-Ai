@@ -1,0 +1,7 @@
+numpy==2.1.1
+scipy==1.14.1
+redis==5.0.8
+pydantic==2.9.2
+pydantic-settings==2.5.2
+structlog==24.4.0
+shapely==2.0.6

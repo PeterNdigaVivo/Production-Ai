@@ -1,0 +1,52 @@
+version: "3.9"
+
+# Production overrides: pinned images from registry, no source bind mounts,
+# GPU reservations, and replicas. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    image: ${REGISTRY}/production-ai/backend:${TAG}
+    command: gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000
+    volumes: []
+    restart: unless-stopped
+
+  celery-worker:
+    image: ${REGISTRY}/production-ai/backend:${TAG}
+    volumes: []
+    deploy:
+      replicas: 2
+
+  detection-engine:
+    image: ${REGISTRY}/production-ai/detection-engine:${TAG}
+    volumes:
+      - models:/models
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+
+  tracking-engine:
+    image: ${REGISTRY}/production-ai/tracking-engine:${TAG}
+    volumes: []
+
+  video-ingestion:
+    image: ${REGISTRY}/production-ai/video-ingestion:${TAG}
+    volumes: []
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu, video]}]
+
+  frontend:
+    image: ${REGISTRY}/production-ai/frontend:${TAG}
+    command: npm run start
+    volumes: []
+
+  nginx:
+    volumes:
+      - ./infrastructure/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    ports:
+      - "80:80"
+      - "443:443"
