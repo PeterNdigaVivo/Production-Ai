@@ -30,12 +30,10 @@ class CameraRegistry:
     def __init__(self, redis: Redis) -> None:
         self.redis = redis
         self.workers: dict[uuid.UUID, tuple[RTSPWorker, asyncio.Task]] = {}
-        self._client = httpx.AsyncClient(timeout=10.0)
+        headers = {"X-Internal-Token": settings.internal_service_token or ""}
+        self._client = httpx.AsyncClient(timeout=10.0, headers=headers)
 
     async def fetch_cameras(self) -> list[CameraSpec]:
-        # Phase-1: ingestion service has no auth token. In production this calls
-        # an internal service token. For now we use an unauthenticated `/internal`
-        # endpoint or the public `/health` polling for connectivity only.
         try:
             r = await self._client.get(f"{settings.backend_url}/api/v1/cameras/_internal")
             r.raise_for_status()

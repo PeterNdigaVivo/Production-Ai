@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     jwt_access_ttl: int = Field(900, alias="JWT_ACCESS_TTL_SECONDS")
     jwt_refresh_ttl: int = Field(2_592_000, alias="JWT_REFRESH_TTL_SECONDS")
 
+    # Shared secret for service-to-service `/_internal` endpoints. Required
+    # when ingestion/tracking talk to the backend. Never expose externally.
+    internal_service_token: str | None = Field(None, alias="INTERNAL_SERVICE_TOKEN")
+
+    # Dev convenience: when ENVIRONMENT == "development" the backend will
+    # idempotently create this admin user on startup. LOCAL ONLY.
+    dev_admin_email: str = Field("admin@local", alias="DEV_ADMIN_EMAIL")
+    dev_admin_password: str = Field("admin", alias="DEV_ADMIN_PASSWORD")
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
 

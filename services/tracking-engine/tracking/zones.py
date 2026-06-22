@@ -1,19 +1,22 @@
 """Workstation zone lookup. Pulls polygons from the backend on a TTL cache."""
 from __future__ import annotations
 import asyncio
+import os
 import time
 import httpx
 from shapely.geometry import Polygon, Point
 
 
 class ZoneCache:
-    def __init__(self, backend_url: str, ttl_seconds: float = 60.0) -> None:
+    def __init__(self, backend_url: str, ttl_seconds: float = 60.0,
+                 internal_token: str | None = None) -> None:
         self.backend_url = backend_url
         self.ttl = ttl_seconds
         self.expires_at = 0.0
         # camera_id -> list[(workstation_id, kind, Polygon)]
         self.zones: dict[str, list[tuple[str, str, Polygon]]] = {}
-        self._client = httpx.AsyncClient(timeout=10.0)
+        token = internal_token or os.environ.get("INTERNAL_SERVICE_TOKEN", "")
+        self._client = httpx.AsyncClient(timeout=10.0, headers={"X-Internal-Token": token})
         self._lock = asyncio.Lock()
 
     async def _refresh(self) -> None:

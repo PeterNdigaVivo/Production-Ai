@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     redis_url: str = Field(..., alias="REDIS_URL")
     stream_frames: str = Field("stream:frames", alias="REDIS_STREAM_FRAMES")
     backend_url: str = Field("http://backend:8000", alias="BACKEND_URL")
+    internal_service_token: str | None = Field(None, alias="INTERNAL_SERVICE_TOKEN")
     target_fps: int = Field(8, alias="INGEST_TARGET_FPS")
     hw_accel: str = Field("auto", alias="INGEST_HW_ACCEL")
     transport: str = Field("tcp", alias="INGEST_TRANSPORT")

@@ -1,11 +1,16 @@
 from fastapi import APIRouter
+from app.api.v1 import internal
 from app.api.v1.endpoints import (
-    auth, factories, lines, cameras, workstations, zones,
+    auth, tenants, factories, lines, cameras, workstations, zones,
     events, alerts, analytics, ws,
 )
 
 api_router = APIRouter()
+# Internal router is mounted first; its routes carry the `X-Internal-Token` gate
+# and `include_in_schema=False`. Nginx blocks any external `/_internal` path.
+api_router.include_router(internal.router, tags=["internal"])
 api_router.include_router(auth.router,         prefix="/auth",        tags=["auth"])
+api_router.include_router(tenants.router,      prefix="/tenants",     tags=["tenants"])
 api_router.include_router(factories.router,    prefix="/factories",   tags=["factories"])
 api_router.include_router(lines.router,        prefix="/lines",       tags=["lines"])
 api_router.include_router(cameras.router,      prefix="/cameras",     tags=["cameras"])

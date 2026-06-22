@@ -15,6 +15,14 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("backend.startup", env=settings.environment)
+    if settings.environment == "development":
+        # Idempotent dev-admin bootstrap so the dashboard has a usable login on
+        # first boot. LOCAL ONLY — see app/scripts/seed_dev_admin.py.
+        try:
+            from app.scripts.seed_dev_admin import seed_dev_admin
+            await seed_dev_admin()
+        except Exception as e:
+            log.warning("backend.seed_dev_admin_failed", error=str(e))
     yield
     log.info("backend.shutdown")
 
