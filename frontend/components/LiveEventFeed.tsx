@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { WS_URL } from "@/lib/api";
+import { getAccessToken } from "@/lib/auth";
 
 type Event = { id: string; data: Record<string, string> };
 
@@ -8,7 +9,13 @@ export default function LiveEventFeed() {
   const [events, setEvents] = useState<Event[]>([]);
 
   useEffect(() => {
-    const ws = new WebSocket(WS_URL);
+    // The WS endpoint authenticates via a token query param (browsers can't set
+    // Authorization headers on a WebSocket). Only events for the caller's tenant
+    // are delivered (enforced server-side).
+    const token = getAccessToken();
+    if (!token) return;
+    const url = `${WS_URL}?token=${encodeURIComponent(token)}`;
+    const ws = new WebSocket(url);
     ws.onmessage = (m) => {
       try {
         const payload = JSON.parse(m.data);

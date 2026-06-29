@@ -1,7 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import datetime, timezone
 
 from app.db.session import get_db
 from app.db.models import Camera
@@ -32,12 +31,7 @@ async def create_camera(body: CameraCreate, db: AsyncSession = Depends(get_db)):
     return cam
 
 
-@router.post("/{camera_id}/heartbeat")
-async def heartbeat(camera_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    """Called by the ingestion service to mark the camera as alive."""
-    cam = await db.get(Camera, camera_id)
-    if not cam:
-        raise HTTPException(404, "not found")
-    cam.last_seen_at = datetime.now(timezone.utc)
-    await db.commit()
-    return {"ok": True}
+# NOTE: the camera heartbeat endpoint moved to the internal router
+# (app/api/v1/internal.py) so it is gated by X-Internal-Token and blocked
+# externally by nginx, matching the other service-to-service routes (Finding 7).
+# The ingestion service already holds INTERNAL_SERVICE_TOKEN.

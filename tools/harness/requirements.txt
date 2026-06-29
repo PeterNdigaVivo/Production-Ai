@@ -1,0 +1,13 @@
+# Step-1 harness dependencies.
+# Versions pinned to match the project's tracking-engine so the vendored tracker
+# behaves identically to production.
+numpy==2.1.1
+scipy==1.14.1
+opencv-python-headless==4.10.0.84
+redis==5.0.8
+pytest==8.3.3
+
+# Only needed if you set HARNESS_DETECTOR=yolo (real detection in publish mode).
+# Heavy; leave commented unless you actually want CPU YOLO on synthetic frames.
+# ultralytics==8.3.20
+# torch==2.4.1

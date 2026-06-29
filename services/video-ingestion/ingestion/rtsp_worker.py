@@ -68,7 +68,10 @@ class RTSPWorker:
         self.frame_size = width * height * 3
         self.stream_key = f"{settings.stream_frames}:{camera_id}"
         self._stop = asyncio.Event()
-        self._heartbeat_client = httpx.AsyncClient(timeout=5.0)
+        self._heartbeat_client = httpx.AsyncClient(
+            timeout=5.0,
+            headers={"X-Internal-Token": settings.internal_service_token or ""},
+        )
 
     async def stop(self) -> None:
         self._stop.set()
@@ -129,5 +132,5 @@ class RTSPWorker:
     async def _heartbeat(self) -> None:
         with suppress(Exception):
             await self._heartbeat_client.post(
-                f"{settings.backend_url}/api/v1/cameras/{self.camera_id}/heartbeat"
+                f"{settings.backend_url}/api/v1/cameras/{self.camera_id}/_internal/heartbeat"
             )

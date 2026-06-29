@@ -1,8 +1,14 @@
 """Event engine.
 
-Consumes `stream:events` via a Redis consumer group (idempotent retries),
-persists `worker_state_changed` events to `worker_events`, and raises alerts on
-configured rules (camera offline, prolonged idle, etc.).
+Consumes `stream:events` via a Redis consumer group (idempotent retries) and
+persists `worker_state_changed` events to `worker_events`.
+
+Idle alerting used to live here and fired on EVERY transition into IDLE (Finding
+6 — alert spam). That has been removed. Debounced, de-duplicated idle alerting is
+now a periodic Celery task (`check_idle_workers`) that only alerts when a worker
+has been continuously IDLE past a threshold without WAITING_FOR_INPUT. A periodic
+check is the correct design because a worker who stays idle emits no further
+transitions, so there is no event here to react to.
 """
 from __future__ import annotations
 import asyncio
@@ -21,9 +27,6 @@ STREAM_EVENTS = os.environ.get("REDIS_STREAM_EVENTS", "stream:events")
 DB_URL = os.environ.get("DATABASE_URL", "").replace("+asyncpg", "")
 GROUP = "event-engine"
 CONSUMER = os.environ.get("HOSTNAME", "event-engine-1")
-
-# Prolonged-idle rule.
-IDLE_ALERT_SECONDS = 180
 
 
 async def ensure_group(r: Redis) -> None:
@@ -52,22 +55,6 @@ async def persist_worker_event(pool: asyncpg.Pool, fields: dict) -> None:
     )
 
 
-async def maybe_raise_idle_alert(pool: asyncpg.Pool, fields: dict) -> None:
-    if fields.get(b"state") != b"IDLE":
-        return
-    # Phase-1 simple rule: any IDLE transition raises a warning alert; in Phase 2
-    # this should require IDLE persisted for IDLE_ALERT_SECONDS without WAITING_FOR_INPUT.
-    await pool.execute(
-        """
-        INSERT INTO alerts (severity, kind, title, description, payload)
-        VALUES ($1, $2, $3, $4, $5::jsonb)
-        """,
-        "warning", "worker_idle", "Worker idle",
-        f"track={fields.get(b'track_id', b'').decode()} camera={fields.get(b'camera_id', b'').decode()}",
-        "{}",
-    )
-
-
 async def amain() -> None:
     r = Redis.from_url(REDIS_URL)
     pool = await asyncpg.create_pool(DB_URL, min_size=2, max_size=10)
@@ -82,7 +69,6 @@ async def amain() -> None:
                 for entry_id, fields in entries:
                     try:
                         await persist_worker_event(pool, fields)
-                        await maybe_raise_idle_alert(pool, fields)
                         await r.xack(STREAM_EVENTS, GROUP, entry_id)
                     except Exception as e:
                         log.warning("event-engine.processing_error", id=entry_id, error=str(e))

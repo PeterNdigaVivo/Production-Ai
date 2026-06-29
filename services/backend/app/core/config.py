@@ -34,6 +34,11 @@ class Settings(BaseSettings):
 
     # Dev convenience: when ENVIRONMENT == "development" the backend will
     # idempotently create this admin user on startup. LOCAL ONLY.
+    # Dev convenience: when ENVIRONMENT == "development" AND seed_dev_admin is
+    # explicitly enabled, the backend creates this admin on startup. Requiring an
+    # explicit opt-in (not just the env string) prevents an accidentally-misset
+    # ENVIRONMENT from creating a well-known superuser in a real deploy (Finding 9).
+    seed_dev_admin: bool = Field(False, alias="SEED_DEV_ADMIN")
     dev_admin_email: str = Field("admin@local", alias="DEV_ADMIN_EMAIL")
     dev_admin_password: str = Field("admin", alias="DEV_ADMIN_PASSWORD")
 

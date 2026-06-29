@@ -19,6 +19,9 @@ def test_access_token_round_trip():
 
 
 def test_refresh_token_round_trip():
-    tok = make_refresh_token("u1")
+    # make_refresh_token now returns (token, jti) to support rotation (Finding 11).
+    tok, jti = make_refresh_token("u1")
     claims = decode_token(tok)
     assert claims["typ"] == "refresh"
+    assert claims["jti"] == jti
+    assert claims["sub"] == "u1"

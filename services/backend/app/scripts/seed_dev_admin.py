@@ -24,8 +24,25 @@ async def seed_dev_admin() -> None:
 
     Idempotent — safe to call on every container restart. No-ops if entities
     already exist; never updates an existing admin's password.
+
+    Safety (Finding 9): refuses to run unless BOTH the environment is
+    development AND SEED_DEV_ADMIN is explicitly enabled. Additionally refuses
+    the weak default password unless the environment is development, so a
+    misconfigured deploy cannot create a well-known superuser.
     """
     settings = get_settings()
+
+    if not settings.seed_dev_admin:
+        log.info("seed.dev_admin.disabled", reason="SEED_DEV_ADMIN not set")
+        return
+    if settings.environment != "development":
+        log.warning("seed.dev_admin.refused", reason="not a development environment")
+        return
+    if settings.dev_admin_password == "admin":
+        log.warning(
+            "seed.dev_admin.weak_default_password",
+            note="using the default 'admin' password; for local dev only",
+        )
     async with SessionLocal() as db:
         for name in _DEV_ROLES:
             exists = (await db.execute(select(Role).where(Role.name == name))).scalar_one_or_none()

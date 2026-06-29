@@ -42,16 +42,32 @@ class WorkerActivityFSM:
     def update(self, ts: float, sig: ActivitySignals) -> str:
         cand = self._candidate(sig)
         self.window.append((ts, cand))
-        # Confirm only if `cand` has been the majority over the debounce window.
+        # Confirm only if `cand` held the majority of TIME over the debounce
+        # window. Time-weighted, not frame-count weighted (Finding 12): under
+        # variable frame rates (which the ingestion layer produces on reconnects)
+        # counting frames lets a burst of frames swing the vote. We weight each
+        # sample by the seconds it represents (gap to the next sample), so the
+        # debounce is genuinely a 60s-of-time majority regardless of fps.
         cutoff = ts - self.debounce_seconds
-        votes: dict[str, int] = {}
-        for t, s in reversed(self.window):
-            if t < cutoff:
-                break
-            votes[s] = votes.get(s, 0) + 1
+        # collect in-window samples oldest->newest
+        samples = [(t, s) for (t, s) in self.window if t >= cutoff]
+        if not samples:
+            return self.state
+        votes: dict[str, float] = {}
+        for i, (t, s) in enumerate(samples):
+            # duration this sample represents: until the next sample, or until
+            # `ts` for the most recent one (min 1ms to avoid zero weight)
+            nxt = samples[i + 1][0] if i + 1 < len(samples) else ts
+            weight = max(nxt - t, 1e-3)
+            votes[s] = votes.get(s, 0.0) + weight
         if not votes:
             return self.state
         winner = max(votes, key=votes.get)
-        if winner != self.state and votes[winner] >= max(3, sum(votes.values()) // 2):
+        total = sum(votes.values())
+        # Confirm a transition only when the winner holds a strict majority of the
+        # window's TIME (> 50%) and we have at least a few seconds of evidence.
+        if (winner != self.state
+                and votes[winner] > total / 2.0
+                and total >= 3.0):
             self.state = winner
         return self.state

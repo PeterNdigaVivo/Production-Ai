@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from jose import jwt, JWTError
@@ -26,8 +27,13 @@ def make_access_token(sub: str, claims: dict[str, Any] | None = None) -> str:
     return _encode({"sub": sub, "typ": "access", **(claims or {})}, _settings.jwt_access_ttl)
 
 
-def make_refresh_token(sub: str) -> str:
-    return _encode({"sub": sub, "typ": "refresh"}, _settings.jwt_refresh_ttl)
+def make_refresh_token(sub: str, jti: str | None = None) -> tuple[str, str]:
+    """Return (token, jti). A unique jti lets the server rotate/revoke refresh
+    tokens (Finding 11). Caller stores the jti as the user's active refresh jti.
+    """
+    jti = jti or uuid.uuid4().hex
+    token = _encode({"sub": sub, "typ": "refresh", "jti": jti}, _settings.jwt_refresh_ttl)
+    return token, jti
 
 
 def decode_token(token: str) -> dict[str, Any]:

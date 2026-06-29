@@ -27,5 +27,11 @@ celery_app.conf.update(
             "task": "app.workers.tasks.check_camera_heartbeats",
             "schedule": crontab(minute="*"),
         },
+        # Debounced idle alerting (Finding 6): periodic check replaces the old
+        # per-transition spam in the event-engine.
+        "idle-worker-check-every-1m": {
+            "task": "app.workers.tasks.check_idle_workers",
+            "schedule": crontab(minute="*"),
+        },
     },
 )
