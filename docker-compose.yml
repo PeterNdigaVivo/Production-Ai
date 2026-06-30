@@ -153,16 +153,14 @@ services:
   frontend:
     build:
       context: ./frontend
+      target: prod
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+        NEXT_PUBLIC_WS_URL:  ${NEXT_PUBLIC_WS_URL}
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
-      NEXT_PUBLIC_WS_URL:  ${NEXT_PUBLIC_WS_URL}
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
+      NODE_ENV: production
     ports: ["3000:3000"]
     networks: [paimnet]
-    command: npm run dev
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.2
