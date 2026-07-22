@@ -1,0 +1,35 @@
+# Staging override: real Hikvision NVR, GPU-capable factory box.
+#
+# Use with the base compose (image builds happen locally — this file does NOT
+# swap images to a registry pull; that's what docker-compose.prod.yml is for,
+# once CI is publishing to a registry).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+#
+# Simpler: put this in .env so `make up` picks it up automatically:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.staging.yml
+#
+# Requires: nvidia-container-toolkit installed on the host, `nvidia-smi`
+# working from a plain container. Otherwise Docker refuses to start the
+# services with a "could not select device driver nvidia" error.
+#
+# See docs/runbooks/staging_deploy.md for the full bring-up flow.
+
+services:
+  video-ingestion:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu, video]
+
+  detection-engine:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
