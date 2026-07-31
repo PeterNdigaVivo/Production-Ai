@@ -4,7 +4,7 @@ import { API_URL } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("admin@local");
+  const [email, setEmail] = useState("admin@local.dev");
   const [password, setPassword] = useState("admin");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
