@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # Maximum bytes per frame published to Redis (downsampled JPEGs).
     max_frame_bytes: int = 200_000
     # Maximum stream length per camera (frames). Redis trims to this with MAXLEN ~.
-    stream_maxlen: int = 600  # ~75s at 8fps
+    stream_maxlen: int = Field(120, alias="INGEST_STREAM_MAXLEN")  # ~30s at 4fps
 
     settings_singleton: bool = True
 

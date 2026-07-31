@@ -34,11 +34,16 @@ services:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
       interval: 10s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 700M
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
     volumes: [redis_data:/data]
     ports: ["6379:6379"]
     networks: [paimnet]
@@ -59,6 +64,11 @@ services:
     ports: ["8000:8000"]
     networks: [paimnet]
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 700M
 
   celery-worker:
     build:
@@ -69,7 +79,12 @@ services:
     volumes:
       - ./services/backend:/app
     networks: [paimnet]
-    command: celery -A app.workers.celery_app worker -l info --concurrency=4
+    command: celery -A app.workers.celery_app worker -l info --concurrency=1
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 500M
 
   celery-beat:
     build:
@@ -81,6 +96,11 @@ services:
       - ./services/backend:/app
     networks: [paimnet]
     command: celery -A app.workers.celery_app beat -l info
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 200M
 
   video-ingestion:
     build:
@@ -95,6 +115,11 @@ services:
     #   resources:
     #     reservations:
     #       devices: [{driver: nvidia, count: 1, capabilities: [gpu, video]}]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 600M
 
   detection-engine:
     build:
@@ -125,6 +150,11 @@ services:
     volumes:
       - ./services/tracking-engine:/app
     networks: [paimnet]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 500M
 
   activity-engine:
     build:
@@ -134,6 +164,11 @@ services:
     volumes:
       - ./services/activity-engine:/app
     networks: [paimnet]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 400M
 
   event-engine:
     build:
@@ -143,6 +178,11 @@ services:
     volumes:
       - ./services/event-engine:/app
     networks: [paimnet]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 300M
 
   frontend:
     build:
@@ -155,10 +195,16 @@ services:
       NODE_ENV: production
     ports: ["3000:3000"]
     networks: [paimnet]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 500M
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.2
     restart: unless-stopped
+    profiles: ["observability"]
     environment:
       MLFLOW_TRACKING_URI: sqlite:////mlflow/mlflow.db
     volumes: [mlflow_data:/mlflow]
@@ -172,6 +218,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.54.1
     restart: unless-stopped
+    profiles: ["observability"]
     volumes:
       - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prom_data:/prometheus
@@ -181,6 +228,7 @@ services:
   grafana:
     image: grafana/grafana:11.2.0
     restart: unless-stopped
+    profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
     volumes:
@@ -193,6 +241,7 @@ services:
   loki:
     image: grafana/loki:3.1.1
     restart: unless-stopped
+    profiles: ["observability"]
     volumes: [loki_data:/loki]
     ports: ["3100:3100"]
     networks: [paimnet]
@@ -200,6 +249,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
+    profiles: ["proxy"]
     depends_on: [backend, frontend]
     volumes:
       - ./infrastructure/nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro

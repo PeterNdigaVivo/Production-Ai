@@ -29,6 +29,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Install CPU torch wheels from PyTorch's dedicated CPU index in a SEPARATE
+# layer so it caches independently of the app deps below. Torch is the heavy
+# ~200MB install; app-requirement churn should not invalidate it.
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.4.1 torchvision==0.19.1
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

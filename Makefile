@@ -1,4 +1,4 @@
-.PHONY: help up down logs build test lint fmt migrate seed clean ps backend-shell frontend-shell
+.PHONY: help up up-core up-full down logs build test lint fmt migrate seed clean ps backend-shell frontend-shell
 
 COMPOSE := docker compose
 
@@ -7,6 +7,12 @@ help:
 
 up: ## Start dev stack
 	$(COMPOSE) up -d --build
+
+up-core: ## Start core services only (no observability, no nginx)
+	$(COMPOSE) up -d
+
+up-full: ## Start core + observability + proxy profiles
+	$(COMPOSE) --profile observability --profile proxy up -d
 
 down: ## Stop stack
 	$(COMPOSE) down
