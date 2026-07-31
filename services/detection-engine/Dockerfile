@@ -54,7 +54,8 @@ RUN python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')" \
  && test -f /opt/models/yolo11n.pt
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+ && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV YOLO_MODEL_PATH=/models/yolo11n.pt
 VOLUME ["/models"]
@@ -90,7 +91,8 @@ RUN python3.11 -m pip install --no-cache-dir -r requirements-gpu.txt
 COPY . .
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+ && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV YOLO_MODEL_PATH=/models/yolo11n.pt
 VOLUME ["/models"]
