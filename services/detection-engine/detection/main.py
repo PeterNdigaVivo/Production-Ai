@@ -133,6 +133,14 @@ async def process_stream(redis, detector, key, stop, capture, machine_det, zone_
 
 
 async def amain() -> None:
+    # Cap PyTorch's intra-op thread pool BEFORE any model loads so CPU
+    # inference can't starve the other services on a 4-core box. Lazy import
+    # keeps this module importable in environments without torch installed
+    # (e.g. static parse/type-check runs).
+    import torch  # noqa: PLC0415
+    torch.set_num_threads(settings.torch_threads)
+    log.info("detection.torch_threads", n=settings.torch_threads)
+
     redis = Redis.from_url(settings.redis_url)
     detector = YoloDetector(
         model_path=settings.model_path,

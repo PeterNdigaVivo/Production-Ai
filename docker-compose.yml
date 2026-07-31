@@ -99,16 +99,23 @@ services:
   detection-engine:
     build:
       context: ./services/detection-engine
+      target: cpu
     <<: *common-env
+    environment:
+      OMP_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
     depends_on: [redis]
     volumes:
       - ./services/detection-engine:/app
       - models:/models
     networks: [paimnet]
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2500M
+    # For the factory GPU box, override `target: gpu` and add:
+    #   deploy: { resources: { reservations: { devices: [{driver: nvidia, count: 1, capabilities: [gpu]}] } } }
 
   tracking-engine:
     build:
