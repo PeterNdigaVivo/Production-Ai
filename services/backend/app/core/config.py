@@ -13,7 +13,6 @@ class Settings(BaseSettings):
 
     # DB
     database_url: str = Field(..., alias="DATABASE_URL")
-    timescale_url: str | None = Field(None, alias="TIMESCALE_URL")
 
     # Redis
     redis_url: str = Field(..., alias="REDIS_URL")

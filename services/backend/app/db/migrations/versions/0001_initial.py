@@ -21,7 +21,19 @@ depends_on = None
 
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
-    op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
+
+    # TimescaleDB is opportunistic. Wrap the CREATE EXTENSION in a SAVEPOINT
+    # so a failure (extension not installed on the server) does not poison the
+    # outer migration transaction. Downstream, the hypertable() calls run only
+    # when _timescale is True; otherwise the tables remain plain Postgres
+    # tables — the module docstring already promises this behaviour.
+    conn = op.get_bind()
+    try:
+        with conn.begin_nested():
+            conn.exec_driver_sql("CREATE EXTENSION IF NOT EXISTS timescaledb;")
+        _timescale = True
+    except Exception:
+        _timescale = False
 
     op.create_table(
         "tenants",
@@ -130,9 +142,12 @@ def upgrade() -> None:
         sa.Column("end_time", sa.Time, nullable=False),
     )
 
+    # Composite PK ("id", "ts"): TimescaleDB requires the partitioning column
+    # in every UNIQUE / PRIMARY KEY index. A plain PK on `id` alone makes
+    # create_hypertable() fail even when the extension is present.
     op.create_table(
         "worker_events",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column("id", UUID(as_uuid=True), nullable=False, server_default=sa.text("gen_random_uuid()")),
         sa.Column("ts", sa.DateTime(timezone=True), nullable=False),
         sa.Column("camera_id", UUID(as_uuid=True), nullable=False),
         sa.Column("workstation_id", UUID(as_uuid=True)),
@@ -141,16 +156,18 @@ def upgrade() -> None:
         sa.Column("confidence", sa.Float, nullable=False, server_default="0"),
         sa.Column("bbox", JSONB),
         sa.Column("extra", JSONB),
+        sa.PrimaryKeyConstraint("id", "ts"),
     )
     op.create_index("ix_worker_events_camera_ts", "worker_events", ["camera_id", "ts"])
     op.create_index("ix_worker_events_workstation_ts", "worker_events", ["workstation_id", "ts"])
-    op.execute(
-        "SELECT create_hypertable('worker_events', 'ts', if_not_exists => TRUE, migrate_data => TRUE);"
-    )
+    if _timescale:
+        op.execute(
+            "SELECT create_hypertable('worker_events', 'ts', if_not_exists => TRUE, migrate_data => TRUE);"
+        )
 
     op.create_table(
         "production_events",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column("id", UUID(as_uuid=True), nullable=False, server_default=sa.text("gen_random_uuid()")),
         sa.Column("ts", sa.DateTime(timezone=True), nullable=False),
         sa.Column("workstation_id", UUID(as_uuid=True), nullable=False),
         sa.Column("line_id", UUID(as_uuid=True), nullable=False),
@@ -158,10 +175,12 @@ def upgrade() -> None:
         sa.Column("kind", sa.String(32), nullable=False),
         sa.Column("cycle_time_s", sa.Float),
         sa.Column("payload", JSONB),
+        sa.PrimaryKeyConstraint("id", "ts"),
     )
-    op.execute(
-        "SELECT create_hypertable('production_events', 'ts', if_not_exists => TRUE, migrate_data => TRUE);"
-    )
+    if _timescale:
+        op.execute(
+            "SELECT create_hypertable('production_events', 'ts', if_not_exists => TRUE, migrate_data => TRUE);"
+        )
 
     op.create_table(
         "production_records",

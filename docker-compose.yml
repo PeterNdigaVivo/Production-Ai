@@ -11,7 +11,6 @@ networks:
 
 volumes:
   pg_data:
-  ts_data:
   redis_data:
   mlflow_data:
   prom_data:
@@ -35,18 +34,6 @@ services:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
       interval: 10s
       retries: 5
-
-  timescaledb:
-    image: timescale/timescaledb:latest-pg16
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: production_ai_ts
-    volumes:
-      - ts_data:/var/lib/postgresql/data
-    ports: ["5433:5432"]
-    networks: [paimnet]
 
   redis:
     image: redis:7-alpine

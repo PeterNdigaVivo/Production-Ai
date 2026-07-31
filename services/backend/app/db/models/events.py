@@ -16,7 +16,7 @@ class WorkerEvent(Base):
     __tablename__ = "worker_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid, init=False)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
     camera_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     workstation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True, default=None)
     worker_track_id: Mapped[int] = mapped_column(Integer, default=0)
@@ -36,7 +36,7 @@ class ProductionEvent(Base):
     __tablename__ = "production_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid, init=False)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
     workstation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     line_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     factory_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
