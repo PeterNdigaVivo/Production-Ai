@@ -8,7 +8,7 @@ from sqlalchemy import select, and_
 from app.workers.celery_app import celery_app
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.db.session import SessionLocal
+from app.workers.db import task_session
 from app.db.models import Camera, Alert
 from app.services.rollup import rollup_window, workers_idle_too_long
 
@@ -47,7 +47,7 @@ async def _rollup_async() -> int:
     # roll up the previous fully-closed window, e.g. at 12:07 -> [12:00, 12:05)
     window_end = _floor_to_window(now, ROLLUP_WINDOW_MINUTES)
     window_start = window_end - timedelta(minutes=ROLLUP_WINDOW_MINUTES)
-    async with SessionLocal() as db:
+    async with task_session() as db:
         return await rollup_window(db, window_start, window_end)
 
 
@@ -64,7 +64,7 @@ def check_idle_workers():
 
 async def _check_idle_workers_async():
     now = datetime.now(timezone.utc)
-    async with SessionLocal() as db:
+    async with task_session() as db:
         idle = await workers_idle_too_long(db, IDLE_ALERT_SECONDS, now=now)
         if not idle:
             return
@@ -110,7 +110,7 @@ def check_camera_heartbeats():
 
 async def _check_camera_heartbeats_async():
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=90)
-    async with SessionLocal() as db:
+    async with task_session() as db:
         cams = (await db.execute(select(Camera).where(Camera.is_active.is_(True)))).scalars().all()
         # existing unack'd offline alerts, to de-dup
         open_alerts = (await db.execute(
