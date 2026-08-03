@@ -54,3 +54,11 @@ logs/
 
 # Docker
 .docker/
+
+# Runtime / scratch artefacts (Phase-0 bring-up produced these at repo root
+# and inside services/backend; keep them out of git so `git status` stays
+# readable on the tower).
+services/backend/celerybeat-schedule
+services/backend/celerybeat-schedule.*
+/*.jpg
+/detections.txt
