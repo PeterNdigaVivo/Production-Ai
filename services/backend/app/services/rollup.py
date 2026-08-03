@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     WorkerEvent, ProductionEvent, ProductionRecord, Workstation, ProductionLine,
 )
+from app.services.intervals import merged_state_seconds
 
 WORKING_STATES = ("WORKING",)
 WAITING_STATE = "WAITING_FOR_INPUT"
@@ -61,30 +62,11 @@ async def rollup_window(db: AsyncSession, window_start: datetime,
         return 0
     line_factory = await _line_factory_map(db, list(set(ws_line.values())))
 
-    # Per-(workstation, state) seconds via LEAD() interval reconstruction, but the
-    # last interval is clamped to window_end (not "now"), so a window is final.
-    next_ts = func.lead(WorkerEvent.ts).over(
-        partition_by=[WorkerEvent.workstation_id, WorkerEvent.worker_track_id],
-        order_by=WorkerEvent.ts,
-    ).label("next_ts")
-    intervals = (
-        select(
-            WorkerEvent.workstation_id.label("ws"),
-            WorkerEvent.state.label("state"),
-            WorkerEvent.ts.label("ts"),
-            next_ts,
-        )
-        .where(and_(WorkerEvent.ts >= window_start, WorkerEvent.ts < window_end))
-        .cte("intervals")
-    )
-    # clamp interval end to window_end
-    end_ts = func.least(func.coalesce(intervals.c.next_ts, window_end), window_end)
-    seconds = func.sum(func.extract("epoch", end_ts - intervals.c.ts)).label("seconds")
-    dur_stmt = (
-        select(intervals.c.ws, intervals.c.state, seconds)
-        .group_by(intervals.c.ws, intervals.c.state)
-    )
-    rows = (await db.execute(dur_stmt)).all()
+    # Per-(workstation, state) seconds as the UNION of intervals across all
+    # track_ids, so that concurrent/phantom tracks cannot cause the reported
+    # total to exceed the window length. Shared helper — analytics.py calls
+    # the same function so live KPIs and the batch roll-up cannot drift.
+    rows = await merged_state_seconds(db, window_start, window_end)
 
     # piece counts per workstation in window
     pieces_stmt = (

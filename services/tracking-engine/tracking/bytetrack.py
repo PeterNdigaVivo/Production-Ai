@@ -55,15 +55,19 @@ def _iou_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 def _xyxy_to_z(xyxy) -> np.ndarray:
     """Measurement vector z = [cx, cy, aspect, height]."""
     x1, y1, x2, y2 = xyxy
-    w = max(1e-3, x2 - x1)
-    h = max(1e-3, y2 - y1)
+    # 1-pixel floor. The previous 1e-3 clamp *created* degenerate 0.001-pixel
+    # boxes when Kalman aspect/height drifted toward zero on lost tracks,
+    # rather than dropping them; boxes narrower than 1px are measurement
+    # noise, not signal.
+    w = max(1.0, x2 - x1)
+    h = max(1.0, y2 - y1)
     return np.array([x1 + w / 2.0, y1 + h / 2.0, w / h, h], dtype=np.float64)
 
 
 def _x_to_xyxy(x: np.ndarray) -> tuple[float, float, float, float]:
     cx, cy, a, h = x[0], x[1], x[2], x[3]
-    w = max(1e-3, a * h)
-    h = max(1e-3, h)
+    w = max(1.0, a * h)
+    h = max(1.0, h)
     return (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
 
 
@@ -224,6 +228,11 @@ class ByteTrack:
             ))
             self.next_id += 1
 
-        # 5) Delete tracks that have been missing too long. (Correct, simple.)
+        # 5) Delete tracks that have been missing too long. Kalman prediction
+        #    extrapolates unboundedly when a track goes unobserved (this is
+        #    what produced the -4009 / 2151 phantom boxes seen in prod), so
+        #    such tracks stay INTERNAL to the tracker (a later frame may
+        #    re-associate them) but are NOT PUBLISHED. Standard SORT/ByteTrack
+        #    "time_since_update == 0 AND hits >= min_hits" contract.
         self.tracks = [t for t in self.tracks if t.misses < self.max_age]
-        return list(self.tracks)
+        return [t for t in self.tracks if t.misses == 0 and t.hits >= self.min_hits]

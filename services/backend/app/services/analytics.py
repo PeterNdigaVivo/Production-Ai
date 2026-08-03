@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     WorkerEvent, ProductionEvent, Workstation, ProductionLine, Factory,
 )
+from app.services.intervals import merged_state_seconds
 
 # States that represent "the worker could have been producing". WAITING is
 # deliberately absent — that is the fairness rule.
@@ -135,41 +136,18 @@ async def compute_line_kpis(
     if not ws_ids:
         return kpis
 
-    # --- Duration reconstruction via LEAD() -------------------------------- #
+    # --- Duration reconstruction — UNION of intervals per workstation ----- #
     # For each (workstation, track) ordered by ts, the state interval ends at
     # the next event's ts, or at `now` for the last (still-open) interval.
-    next_ts = func.lead(WorkerEvent.ts).over(
-        partition_by=[WorkerEvent.workstation_id, WorkerEvent.worker_track_id],
-        order_by=WorkerEvent.ts,
-    ).label("next_ts")
-
-    intervals = (
-        select(
-            WorkerEvent.state.label("state"),
-            WorkerEvent.ts.label("ts"),
-            next_ts,
-        )
-        .where(
-            and_(
-                WorkerEvent.workstation_id.in_(ws_ids),
-                WorkerEvent.ts >= since,
-            )
-        )
-        .cte("intervals")
+    # We then MERGE overlapping intervals per (workstation, state) so total
+    # time never exceeds wall clock. Same helper as the batch roll-up in
+    # rollup.py so live KPIs and rolled-up records cannot drift.
+    per_ws_rows = await merged_state_seconds(
+        db, since, now, workstation_ids=ws_ids,
     )
-
-    # seconds = EXTRACT(EPOCH FROM (COALESCE(next_ts, now) - ts)), summed per state
-    end_ts = func.coalesce(intervals.c.next_ts, now)
-    seconds = func.sum(
-        func.extract("epoch", end_ts - intervals.c.ts)
-    ).label("seconds")
-
-    dur_stmt = (
-        select(intervals.c.state, seconds)
-        .group_by(intervals.c.state)
-    )
-    rows = (await db.execute(dur_stmt)).all()
-    state_seconds = {state: float(secs or 0.0) for state, secs in rows}
+    state_seconds: dict[str, float] = {}
+    for _ws, state, secs in per_ws_rows:
+        state_seconds[state] = state_seconds.get(state, 0.0) + secs
     kpis.state_seconds = state_seconds
 
     kpis.working_s = sum(state_seconds.get(s, 0.0) for s in WORKING_STATES)

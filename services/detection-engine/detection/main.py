@@ -95,6 +95,14 @@ def _make_handler(redis: Redis, detector: YoloDetector, camera_id: str, out_key:
             "latency_ms": latency_ms,
             "detections": det_dicts,
         }
+        # Forward frame dimensions from the ingestion payload so the tracking
+        # engine can bounds-check published boxes against the frame.
+        raw_w = fields.get(b"w")
+        raw_h = fields.get(b"h")
+        if raw_w is not None:
+            payload["w"] = int(raw_w)
+        if raw_h is not None:
+            payload["h"] = int(raw_h)
         if machine_running:
             payload["machine_running"] = machine_running
         await redis.xadd(out_key, {"json": json.dumps(payload)}, maxlen=600, approximate=True)
