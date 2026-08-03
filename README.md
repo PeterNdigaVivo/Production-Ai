@@ -60,10 +60,17 @@ make up
 
 ## Phases
 
-1. **Phase 1 (this scaffold)** — RTSP ingestion, detection, tracking,
-   workstation zones, presence analytics, dashboard skeleton.
-2. **Phase 2** — Activity recognition, idle intelligence, machine activity.
-3. **Phase 3** — Piece counting, cycle time, production analytics.
-4. **Phase 4** — RFID/barcode integration, MLflow A/B, advanced optimization.
+The authoritative plan is [`ROADMAP.md`](ROADMAP.md). Read it before
+proposing features — it also carries the ground rules and the "detection vs.
+activity" distinction that drives sequencing.
 
-See [`docs/architecture/phases.md`](docs/architecture/phases.md).
+The four-phase list originally in this section (and still in
+[`docs/architecture/phases.md`](docs/architecture/phases.md) for historical
+context) is **superseded**. Two differences worth calling out here:
+
+- **Camera-only.** RFID / barcode / QR readers are ruled out — the original
+  Phase 4 assumed they'd be added.
+- **Custom model training is deferred to Phase 4 and gated on Phase 3's
+  accuracy measurement.** The stock YOLO model plus tight zones and
+  well-tuned thresholds is expected to carry us until Phase 3 proves
+  otherwise; training a custom head before that is speculative work.

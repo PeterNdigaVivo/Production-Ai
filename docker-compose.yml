@@ -43,7 +43,14 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    # noeviction (not allkeys-lru): LRU under memory pressure silently evicts
+    # stream entries and XGROUP consumer-group metadata, which corrupts the
+    # pipeline (offsets vanish, in-flight messages get replayed or lost).
+    # Every stream writer already trims with MAXLEN — frames 120/camera in
+    # ingestion, detections/tracks 600, events 10k — so memory is bounded by
+    # design. If the 512M cap is ever hit, writes MUST fail loudly rather
+    # than data silently disappearing.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
     volumes: [redis_data:/data]
     ports: ["6379:6379"]
     networks: [paimnet]

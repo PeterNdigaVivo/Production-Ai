@@ -1,5 +1,16 @@
 # Phased delivery
 
+> **SUPERSEDED.** The authoritative plan is [`/ROADMAP.md`](../../ROADMAP.md).
+> The four-phase list below is kept for historical context but is no longer
+> the plan of record. Key differences to note:
+>
+> - **Camera-only.** RFID / barcode / QR (below in Phase 4) is ruled out.
+> - **Custom model training is deferred to Phase 4** in the new roadmap and
+>   is gated on Phase 3's accuracy measurement showing the stock model is
+>   the limiting factor. The Phase-3 line item below ("custom sewing-machine /
+>   tray / bundle classes after labelling 5–10k bbox samples") is
+>   speculative work that only happens if the measurement demands it.
+
 ## Phase 1 — Foundation (this scaffold)
 
 * RTSP ingest → Redis frame streams
