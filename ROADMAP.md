@@ -1,7 +1,7 @@
 # Production-AI — Roadmap
 
 **Owner:** Stephen Nderitu
-**Status:** Phase 0 in progress
+**Status:** Phase 0 complete — Phase 1 next
 **Last updated:** 3 August 2026
 
 ---
@@ -61,9 +61,9 @@ Postgres.
 - [x] Resource-fit the stack for 4 cores / 16 GB
 - [x] Fix the Celery event-loop bug
 - [x] Redis `maxmemory-policy` set to `noeviction`
-- [ ] Confirm the dashboard renders and login works
-- [ ] First camera configured and streaming
-- [ ] `person` detections confirmed in `worker_events`
+- [x] Confirm the dashboard renders and login works
+- [x] First camera configured and streaming
+- [x] `person` detections confirmed in `worker_events`
 
 **Exit test:** `select count(*) from worker_events` climbs while a real camera
 is pointed at the floor.
@@ -187,6 +187,47 @@ This log exists so out-of-band work stays recorded and the roadmap above
 remains the single source of truth. Newest first; the roadmap phases stay
 narrative, this section stays factual (one entry per landed commit or short
 group of commits).
+
+### 3 August 2026 — Phase 0 exit test passed (bring-up findings)
+
+The three remaining Phase 0 checkboxes ticked, verified live on the factory
+tower today:
+
+- **Dashboard renders and login works.** `POST /api/v1/auth/login` returned
+  an access+refresh pair for the seeded admin; the dashboard rendered under
+  the AuthGate.
+- **First camera configured and streaming.** Camera
+  `f524b92c-f155-4792-9ca0-908ddb7c1dc4`; frames stream sitting at its
+  MAXLEN cap (steady state, no unbounded growth); ingestion heartbeats
+  landing on `POST /cameras/{id}/_internal/heartbeat`.
+- **`person` detections confirmed in `worker_events` (exit test).**
+  `select count(*) from worker_events` climbed 1028 → 1102 in ~8 min with
+  `max(ts)` seconds old at query time — the test the roadmap defines for
+  Phase 0.
+
+Three findings surfaced during verification, each recorded here so nothing
+gets lost in the transition to Phase 1:
+
+- **All `worker_events` rows have `workstation_id = NULL`.** No zones are
+  defined for the seeded camera yet, so `tracking-engine`'s
+  `assign_workstation()` returns `None` for every track and analytics /
+  per-station KPIs stay empty. This is not a bug — it is the next work
+  item, exactly the reason Phase 1's zone editor is the highest-value
+  screen in the system. **Fix in Phase 1** (zone editor + `POST /zones`
+  through the UI).
+- **`redis --force-recreate` at ~12:15 UTC broke streambus consumers.**
+  Consumer services logged connection errors after Redis restarted; the
+  pipeline resumed on its own and `event-engine` lag returned to 0 within
+  a couple of poll cycles. Recovery worked, but the reconnect path isn't
+  covered by an automated test today — **candidate hardening item**:
+  simulate a Redis bounce in a service integration test and assert every
+  consumer (`detection-engine`, `tracking-engine`, `activity-engine`,
+  `event-engine`) resumes without operator intervention.
+- **Celery healthchecks now green** after rebuild to `cc9310f`
+  (`inspect ping -d celery@$HOSTNAME` for the worker, `/proc` scan for
+  beat). Confirmed via `docker compose ps` — previously both services
+  reported unhealthy indefinitely because the backend Dockerfile's HTTP
+  healthcheck was inherited unchanged.
 
 ### 3 August 2026 — Redis `noeviction` + adopt ROADMAP.md as authoritative
 
