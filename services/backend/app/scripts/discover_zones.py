@@ -20,9 +20,11 @@ Contract (must not break)
 * Reads Workstation + Zone as SELECT only. Never writes.
 * Skips proposals whose centre lies inside an existing zone polygon for
   this camera (so we don't propose re-drawing what's already there).
-* Skips proposals whose centre y < FAR_Y_PX (200 by default) — operators
-  further back than that appear <~40 px tall and would produce noisy
-  zones; logs them as "observed but skipped: too far".
+* Skips proposals whose centre y < far-cutoff (default 28% of frame
+  height; --far-cutoff-frac). Operators that far back render <~40 px
+  tall on 720p and would produce noisy zones; logs them as "observed
+  but skipped: too far". The cutoff is fractional so it scales across
+  camera resolutions — 720p → 200 px, 1080p → 302 px.
 
 Behaviour
 ---------
@@ -74,7 +76,7 @@ CELL_PX = 16
 DWELL_THRESHOLD_S = 90.0
 PADDING_PX = 20
 MIN_BOX_PX = 100
-FAR_Y_PX = 200
+FAR_CUTOFF_FRAC = 0.28   # 28% of frame height — 720p → 200px, 1080p → 302px
 MIN_SAMPLES = 500
 MAX_PER_SAMPLE_WEIGHT_S = 2.0
 IDLE_STREAM_TIMEOUT_S = 60.0
@@ -402,6 +404,11 @@ async def amain(args) -> int:
     blobs = _connected_blobs(hot)
     print(f"[blobs] {len(blobs)} candidate blob(s) above {args.dwell_threshold_seconds}s dwell")
 
+    # Fractional far-cutoff scales with resolution (720p→~200, 1080p→~302).
+    far_cutoff_px = int(frame_h * args.far_cutoff_frac)
+    print(f"[far-cutoff] y < {far_cutoff_px}px "
+          f"(= {args.far_cutoff_frac:.2f} * {frame_h}px frame height)")
+
     label_i = _next_label_index(existing)
     proposals: list[dict] = []
     skipped_far: list[dict] = []
@@ -418,7 +425,7 @@ async def amain(args) -> int:
                 "dwell_seconds": round(dwell, 1),
             })
             continue
-        if cy < args.far_y:
+        if cy < far_cutoff_px:
             skipped_far.append({
                 "center": [int(cx), int(cy)],
                 "dwell_seconds": round(dwell, 1),
@@ -445,8 +452,9 @@ async def amain(args) -> int:
         })
         label_i += 1
 
-    # 4) Write outputs.
-    out_dir = Path(args.out_dir)
+    # 4) Write outputs. Default is /tmp/discover_zones/<camera_id>/ so runs
+    #    for different cameras never clobber each other. --out-dir overrides.
+    out_dir = Path(args.out_dir) if args.out_dir else Path("/tmp/discover_zones") / args.camera
     out_dir.mkdir(parents=True, exist_ok=True)
 
     proposals_doc = {
@@ -461,7 +469,8 @@ async def amain(args) -> int:
             "frame": {"w": frame_w, "h": frame_h},
             "grid_cell_px": args.cell,
             "dwell_threshold_s": args.dwell_threshold_seconds,
-            "far_y_cutoff_px": args.far_y,
+            "far_cutoff_frac": args.far_cutoff_frac,
+            "far_cutoff_px": far_cutoff_px,
         },
         "existing_zones_count": len(existing),
         "proposals": proposals,
@@ -493,7 +502,8 @@ async def amain(args) -> int:
         print(f"overlay:   {overlay_path}")
     print(f"proposed:  {len(proposals)}")
     print(f"skipped (inside existing): {len(skipped_inside)}")
-    print(f"skipped (too far, y<{args.far_y}): {len(skipped_far)}")
+    print(f"skipped (too far, y<{far_cutoff_px}px = "
+          f"{args.far_cutoff_frac:.2f}·{frame_h}): {len(skipped_far)}")
     for s in skipped_far:
         print(f"  too-far centre {tuple(s['center'])}  dwell={s['dwell_seconds']}s")
     print("")
@@ -519,10 +529,12 @@ def _parse_args(argv=None):
                    help=f"px padding around blob bbox (default {PADDING_PX})")
     p.add_argument("--min-size", type=int, default=MIN_BOX_PX,
                    help=f"minimum zone width/height in px (default {MIN_BOX_PX})")
-    p.add_argument("--far-y", type=int, default=FAR_Y_PX,
-                   help=f"skip blobs whose centre y < this (default {FAR_Y_PX})")
-    p.add_argument("--out-dir", default="/tmp/discover_zones",
-                   help="output directory (default /tmp/discover_zones)")
+    p.add_argument("--far-cutoff-frac", type=float, default=FAR_CUTOFF_FRAC,
+                   help=f"skip blobs whose centre y is above this fraction of "
+                        f"frame height (default {FAR_CUTOFF_FRAC}). Scales "
+                        f"correctly across camera resolutions.")
+    p.add_argument("--out-dir", default=None,
+                   help="output directory (default /tmp/discover_zones/<camera_id>)")
     return p.parse_args(argv)
 
 

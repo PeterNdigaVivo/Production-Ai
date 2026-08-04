@@ -1,4 +1,14 @@
-"""One-off: insert Station 4 + Station 5 workstations and seat zones on
+"""SUPERSEDED — kept for historical record of the first camera onboarding.
+
+The generalisation of this one-off is
+`services/backend/app/scripts/promote_zones.py`, which reads a decisions.json
+alongside a proposals.json instead of hardcoding polygons. Use promote_zones
+for every subsequent camera. Do not extend this file.
+
+Original docstring follows.
+--------------------------------------------------------------------------
+
+One-off: insert Station 4 + Station 5 workstations and seat zones on
 Line A for camera f524b92c-f155-4792-9ca0-908ddb7c1dc4.
 
 Derived from two approved dwell-clustering runs (see
