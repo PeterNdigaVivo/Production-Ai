@@ -2,7 +2,7 @@
 
 **Owner:** Stephen Nderitu
 **Status:** Phase 0 complete — Phase 1 next
-**Last updated:** 3 August 2026
+**Last updated:** 4 August 2026
 
 ---
 
@@ -187,6 +187,41 @@ This log exists so out-of-band work stays recorded and the roadmap above
 remains the single source of truth. Newest first; the roadmap phases stay
 narrative, this section stays factual (one entry per landed commit or short
 group of commits).
+
+### 4 August 2026 — Row 1 near-field mapped: Stations 4 & 5 inserted from dwell data
+
+Discovery run #2 (30 min, mid-morning, **20,422 samples / 123 distinct
+tracks**) both validated and extended the seat map:
+
+- **Station 1** accumulated **1,477 dwell-seconds inside its polygon** —
+  disproving yesterday's "polygon too high" hypothesis. The zone is
+  positioned correctly; yesterday's near-zero hit count was a traffic
+  question, not a geometry one.
+- **Station 2** re-validated on the same run (dwell falls squarely inside
+  its polygon).
+- **Stations 4 and 5** inserted from the run's two new dwell clusters via
+  the idempotent script (commit `072b869`). Polygons match the measured
+  clusters. **Station 5 merges two blobs** that `discover_zones` split
+  because the seat sits at the frame bottom (y=720 = frame height) and
+  the operator's foot point straddled the clamp; the polygon runs to
+  y=720 to reunite the seat.
+- **All five seat zones on Row 1 near-field are now empirically backed**
+  by measured operator dwell, not eyeballing.
+
+Still unmapped, deferred to future discovery passes:
+
+- The right row and the upper-left cluster. Rerunning `discover_zones`
+  costs nothing (passive tail, no writes) so we do it when those seats
+  are occupied — the tool is occupancy-dependent, not clock-dependent.
+
+Known quirk to resolve when the zone editor lands (Phase 1):
+
+- `POST /api/v1/zones` auto-bumps `Workstation.layout_version` before
+  insert, so the *first* zone created for a fresh workstation via the API
+  lands at `layout_version=2`, not 1. The one-off script sidesteps this
+  by setting the field explicitly to match Stations 1–3. The proper fix
+  is in the endpoint: only bump when there is already a zone for that
+  workstation (i.e. when this insert is genuinely a new revision).
 
 ### 3 August 2026 — Phase 0 exit test passed (bring-up findings)
 
