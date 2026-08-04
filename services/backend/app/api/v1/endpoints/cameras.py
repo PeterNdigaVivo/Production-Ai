@@ -1,13 +1,28 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from redis.asyncio import Redis
 
 from app.db.session import get_db
-from app.db.models import Camera
+from app.db.models import Camera, Zone, Workstation
 from app.schemas.tenancy import CameraCreate, CameraRead
 from app.api.deps import current_user
+from app.core.config import get_settings
 
 router = APIRouter(dependencies=[Depends(current_user)])
+
+
+# Frame-stream client is kept separate from the token-store client because it
+# must NOT decode responses (jpeg payloads are binary). Lazy singleton so tests
+# can override via app.dependency_overrides.
+_frames_redis: Redis | None = None
+
+
+def get_frames_redis() -> Redis:
+    global _frames_redis
+    if _frames_redis is None:
+        _frames_redis = Redis.from_url(get_settings().redis_url, decode_responses=False)
+    return _frames_redis
 
 
 @router.get("", response_model=list[CameraRead])
@@ -29,6 +44,77 @@ async def create_camera(body: CameraCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(cam)
     return cam
+
+
+@router.get("/{camera_id}/frame")
+async def get_camera_frame(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_frames_redis),
+) -> Response:
+    """Return the latest JPEG frame for a camera from `stream:frames:<id>`.
+
+    The ingestion worker (rtsp_worker.py) publishes each frame as an XADD with
+    fields {camera_id, ts, w, h, jpg}. We XREVRANGE COUNT 1 to pull the newest
+    and hand back the raw JPEG bytes; native width/height ride along in
+    X-Frame-Width / X-Frame-Height response headers so the UI can build an SVG
+    viewBox that scales polygons correctly regardless of camera resolution.
+    """
+    cam = await db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+
+    key = f"stream:frames:{camera_id}"
+    entries = await redis.xrevrange(key, count=1)
+    if not entries:
+        raise HTTPException(404, "no frames available for this camera")
+
+    _entry_id, fields = entries[0]
+    jpg = fields.get(b"jpg")
+    if not jpg:
+        raise HTTPException(404, "frame payload missing jpg field")
+
+    headers: dict[str, str] = {"Cache-Control": "no-store"}
+    w = fields.get(b"w")
+    h = fields.get(b"h")
+    if w is not None:
+        headers["X-Frame-Width"] = w.decode() if isinstance(w, bytes) else str(w)
+    if h is not None:
+        headers["X-Frame-Height"] = h.decode() if isinstance(h, bytes) else str(h)
+
+    return Response(content=jpg, media_type="image/jpeg", headers=headers)
+
+
+@router.get("/{camera_id}/zones")
+async def list_camera_zones(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """Return every zone attached to any workstation on this camera, with the
+    workstation's human-readable name inlined so the viewer can label each
+    polygon without a second round-trip. User-facing counterpart to the
+    `_internal` variant used by tracking-engine."""
+    cam = await db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+
+    stmt = (
+        select(Zone, Workstation.id, Workstation.name)
+        .join(Workstation, Workstation.id == Zone.workstation_id)
+        .where(Workstation.camera_id == camera_id)
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        {
+            "zone_id": str(z.id),
+            "workstation_id": str(ws_id),
+            "workstation_name": ws_name,
+            "kind": z.kind,
+            "polygon": z.polygon,
+            "layout_version": z.layout_version,
+        }
+        for z, ws_id, ws_name in rows
+    ]
 
 
 # NOTE: the camera heartbeat endpoint moved to the internal router

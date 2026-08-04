@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import useSWR from "swr";
+import Link from "next/link";
 import { api } from "@/lib/api";
 
 type Cam = {
@@ -42,7 +43,7 @@ export default function CamerasPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left opacity-60">
-              <th className="py-2">Name</th><th>RTSP</th><th>FPS</th><th>Active</th><th>Last seen</th>
+              <th className="py-2">Name</th><th>RTSP</th><th>FPS</th><th>Active</th><th>Last seen</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -53,6 +54,11 @@ export default function CamerasPage() {
                 <td>{c.fps_target}</td>
                 <td>{c.is_active ? "✓" : "✗"}</td>
                 <td>{c.last_seen_at ?? "—"}</td>
+                <td>
+                  <Link href={`/cameras/${c.id}/zones`} className="text-blue-400 hover:text-blue-300 underline">
+                    View zones
+                  </Link>
+                </td>
               </tr>
             ))}
           </tbody>
