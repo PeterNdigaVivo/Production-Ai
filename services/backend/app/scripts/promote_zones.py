@@ -235,6 +235,29 @@ def assign_names(promotions: list[dict], existing_workstation_names: set[str]) -
 # ---------------------------------------------------------------------------- #
 # I/O
 # ---------------------------------------------------------------------------- #
+def load_json_file(path: str) -> dict:
+    """Read a user-authored JSON file, tolerating a UTF-8 BOM.
+
+    Windows PowerShell's `Set-Content -Encoding utf8` writes a BOM by
+    default; the built-in `json` module cannot parse that. `utf-8-sig`
+    strips a leading BOM if present and is a no-op otherwise, so this
+    is safe on POSIX-written files too.
+
+    Raises ValueError with a message shaped for the STOPPED report on any
+    IO or parse failure, so the caller can emit one clean stderr line
+    instead of a raw traceback.
+    """
+    p = Path(path)
+    try:
+        raw = p.read_text(encoding="utf-8-sig")
+    except OSError as e:
+        raise ValueError(f"{path}: cannot read ({e.__class__.__name__}: {e})") from e
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path}: not valid JSON ({e.msg} at line {e.lineno} col {e.colno})") from e
+
+
 async def _existing_zones_for_camera(db, camera_id: str) -> list[dict]:
     stmt = (
         select(Zone, Workstation.name, Workstation.id)
@@ -252,8 +275,13 @@ async def _existing_zones_for_camera(db, camera_id: str) -> list[dict]:
 # Main
 # ---------------------------------------------------------------------------- #
 async def amain(args) -> int:
-    proposals = json.loads(Path(args.proposals).read_text())
-    decisions = json.loads(Path(args.decisions).read_text())
+    # ---- 0) File loads (tolerate UTF-8 BOM; malformed JSON is a clean stop) - #
+    try:
+        proposals = load_json_file(args.proposals)
+        decisions = load_json_file(args.decisions)
+    except ValueError as e:
+        print(f"STOPPED: {e}", file=sys.stderr)
+        return 2
 
     # ---- 1) Pure validation (no DB yet) ------------------------------------ #
     try:

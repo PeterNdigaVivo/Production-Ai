@@ -8,6 +8,8 @@ Run:  pytest tests/test_promote_zones.py -v
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.scripts.promote_zones import (
@@ -18,6 +20,7 @@ from app.scripts.promote_zones import (
     _polygon_from_bbox,
     _polygon_in_frame,
     assign_names,
+    load_json_file,
     resolve_promotions,
     validate_decisions,
 )
@@ -239,6 +242,47 @@ def test_assign_names_from_empty_start():
     proms = resolve_promotions(props, decs)
     assign_names(proms, existing_workstation_names=set())
     assert proms[0]["assigned_name"] == "Station 1"
+
+
+# ---------------------------------------------------------------------------- #
+# load_json_file — the BOM fix from the live smoke test
+# ---------------------------------------------------------------------------- #
+def test_load_json_file_reads_plain_utf8(tmp_path):
+    p = tmp_path / "d.json"
+    p.write_text('{"line": "Line A"}', encoding="utf-8")
+    assert load_json_file(str(p)) == {"line": "Line A"}
+
+
+def test_load_json_file_strips_utf8_bom_from_windows_powershell(tmp_path):
+    """PowerShell's `Set-Content -Encoding utf8` writes a BOM (EF BB BF)
+    at the start of the file. The default `open()` mode passes those bytes
+    straight to `json.loads`, which raises
+    `Unexpected UTF-8 BOM (decode using utf-8-sig)`. The fix is to read
+    with `encoding='utf-8-sig'`, which strips a leading BOM if present
+    and is a no-op otherwise."""
+    p = tmp_path / "d.json"
+    # write raw bytes: BOM + valid JSON
+    p.write_bytes(b"\xef\xbb\xbf" + json.dumps({"line": "Line A"}).encode("utf-8"))
+    # sanity: raw bytes really do have the BOM
+    assert p.read_bytes().startswith(b"\xef\xbb\xbf")
+    # our loader tolerates it
+    assert load_json_file(str(p)) == {"line": "Line A"}
+
+
+def test_load_json_file_malformed_json_raises_clean_valueerror(tmp_path):
+    """Malformed JSON must NOT produce a raw JSONDecodeError traceback —
+    it must raise ValueError with a message the caller can turn into a
+    single STOPPED line."""
+    p = tmp_path / "bad.json"
+    p.write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"bad\.json: not valid JSON"):
+        load_json_file(str(p))
+
+
+def test_load_json_file_missing_file_raises_clean_valueerror(tmp_path):
+    p = tmp_path / "nope.json"
+    with pytest.raises(ValueError, match=r"nope\.json: cannot read"):
+        load_json_file(str(p))
 
 
 def test_assign_names_case_insensitive_collision():
