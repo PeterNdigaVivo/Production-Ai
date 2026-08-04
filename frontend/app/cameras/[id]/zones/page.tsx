@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { api, apiBlob } from "@/lib/api";
+import { ApiError, api, apiBlob } from "@/lib/api";
 
 type ZoneRow = {
   zone_id: string;
@@ -20,9 +20,16 @@ type FrameData = {
   height: number;
 };
 
-// Palette per zone kind. Read-only viewer, so we lean toward legibility over
-// brand consistency; strokes are strong, fills are semi-transparent so the
-// underlying frame still shows through.
+// Distinguishable failure kinds so the UI can never again hide a 200-with-body
+// behind "no frame available".
+type FrameError =
+  | { kind: "empty_stream"; message: string }
+  | { kind: "camera_unknown"; message: string }
+  | { kind: "unauthorized"; message: string }
+  | { kind: "http"; status: number; message: string }
+  | { kind: "network"; message: string }
+  | { kind: "decode"; message: string };
+
 const KIND_STYLE: Record<string, { stroke: string; fill: string }> = {
   seat: { stroke: "#38bdf8", fill: "rgba(56, 189, 248, 0.20)" },
   machine: { stroke: "#f59e0b", fill: "rgba(245, 158, 11, 0.20)" },
@@ -31,12 +38,38 @@ const KIND_STYLE: Record<string, { stroke: string; fill: string }> = {
 };
 const DEFAULT_STYLE = { stroke: "#cbd5e1", fill: "rgba(203, 213, 225, 0.20)" };
 
+/** Decode a JPEG blob into its native pixel dimensions via a hidden <img>.
+ * This is CORS-immune: no response-header contract needed, works at any
+ * camera resolution the browser can decode. */
+function measureBlob(blob: Blob): Promise<{ objectUrl: string; width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("image decoded with zero dimensions"));
+        return;
+      }
+      resolve({ objectUrl, width: w, height: h });
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("browser could not decode the frame as an image"));
+    };
+    img.src = objectUrl;
+  });
+}
+
 export default function CameraZoneViewerPage({ params }: { params: { id: string } }) {
   const cameraId = params.id;
   const [frame, setFrame] = useState<FrameData | null>(null);
-  const [frameError, setFrameError] = useState<string | null>(null);
+  const [frameError, setFrameError] = useState<FrameError | null>(null);
   const [frameLoading, setFrameLoading] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
+  const currentObjectUrl = useRef<string | null>(null);
 
   const {
     data: zones,
@@ -48,18 +81,31 @@ export default function CameraZoneViewerPage({ params }: { params: { id: string 
     setFrameLoading(true);
     setFrameError(null);
     try {
-      const { blob, headers } = await apiBlob(`/api/v1/cameras/${cameraId}/frame`);
-      // Actual frame dims from the payload — never hard-coded. Falls back to
-      // the blob's intrinsic size only if headers are missing (they shouldn't).
-      const w = Number(headers.get("X-Frame-Width")) || 0;
-      const h = Number(headers.get("X-Frame-Height")) || 0;
-      const objectUrl = URL.createObjectURL(blob);
+      const { blob } = await apiBlob(`/api/v1/cameras/${cameraId}/frame`);
+      const measured = await measureBlob(blob);
       setFrame((prev) => {
         if (prev) URL.revokeObjectURL(prev.objectUrl);
-        return { objectUrl, width: w, height: h };
+        currentObjectUrl.current = measured.objectUrl;
+        return measured;
       });
-    } catch (e: any) {
-      setFrameError(e?.message ?? "Failed to load frame");
+    } catch (e: unknown) {
+      // Classify so the UI shows the right message — never silently degrade
+      // a real HTTP body into "no frame available".
+      if (e instanceof ApiError) {
+        if (e.status === 401) {
+          setFrameError({ kind: "unauthorized", message: e.detail || "session expired" });
+        } else if (e.status === 404 && /no frames/i.test(e.detail)) {
+          setFrameError({ kind: "empty_stream", message: e.detail });
+        } else if (e.status === 404) {
+          setFrameError({ kind: "camera_unknown", message: e.detail || "camera not found" });
+        } else {
+          setFrameError({ kind: "http", status: e.status, message: e.detail || e.message });
+        }
+      } else if (e instanceof Error && /decode|dimensions/i.test(e.message)) {
+        setFrameError({ kind: "decode", message: e.message });
+      } else {
+        setFrameError({ kind: "network", message: e instanceof Error ? e.message : String(e) });
+      }
     } finally {
       setFrameLoading(false);
     }
@@ -69,12 +115,10 @@ export default function CameraZoneViewerPage({ params }: { params: { id: string 
     loadFrame();
   }, [loadFrame, refreshTick]);
 
-  // Free the object URL on unmount so the browser doesn't leak the frame.
   useEffect(() => {
     return () => {
-      if (frame) URL.revokeObjectURL(frame.objectUrl);
+      if (currentObjectUrl.current) URL.revokeObjectURL(currentObjectUrl.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -82,7 +126,8 @@ export default function CameraZoneViewerPage({ params }: { params: { id: string 
       <div className="flex items-center justify-between gap-3">
         <div className="space-y-1">
           <div className="text-xs uppercase tracking-wide opacity-60">
-            <Link href="/cameras" className="underline">Cameras</Link> <span aria-hidden>›</span> Zones
+            <Link href="/cameras" className="underline">Cameras</Link>{" "}
+            <span aria-hidden>›</span> Zones
           </div>
           <h2 className="text-2xl font-semibold">Camera zones</h2>
           <div className="font-mono text-xs opacity-60">{cameraId}</div>
@@ -96,19 +141,19 @@ export default function CameraZoneViewerPage({ params }: { params: { id: string 
         </button>
       </div>
 
-      {frameError && (
-        <div className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200">
-          {frameError}
-        </div>
-      )}
+      <FrameErrorPanel err={frameError} />
       {zonesError && (
         <div className="rounded border border-red-700 bg-red-950/40 p-3 text-sm text-red-200">
-          Failed to load zones: {String(zonesError.message ?? zonesError)}
+          Failed to load zones:{" "}
+          {zonesError instanceof ApiError
+            ? `${zonesError.status} — ${zonesError.detail}`
+            : String((zonesError as Error)?.message ?? zonesError)}
         </div>
       )}
 
       <ZoneOverlay
         frame={frame}
+        frameError={frameError}
         zones={zones ?? []}
         zonesLoading={zonesLoading}
         frameLoading={frameLoading}
@@ -119,13 +164,36 @@ export default function CameraZoneViewerPage({ params }: { params: { id: string 
   );
 }
 
+function FrameErrorPanel({ err }: { err: FrameError | null }) {
+  if (!err) return null;
+  const isEmpty = err.kind === "empty_stream";
+  const style = isEmpty
+    ? "border-amber-700 bg-amber-950/40 text-amber-100"
+    : "border-red-700 bg-red-950/40 text-red-200";
+  const heading =
+    err.kind === "empty_stream" ? "No frame in the stream yet"
+    : err.kind === "camera_unknown" ? "Camera not found"
+    : err.kind === "unauthorized" ? "Not authorised"
+    : err.kind === "decode" ? "Frame received but could not be rendered"
+    : err.kind === "http" ? `HTTP ${err.status}`
+    : "Network error";
+  return (
+    <div className={`rounded border p-3 text-sm ${style}`}>
+      <div className="font-semibold">{heading}</div>
+      <div className="opacity-90">{err.message}</div>
+    </div>
+  );
+}
+
 function ZoneOverlay({
   frame,
+  frameError,
   zones,
   zonesLoading,
   frameLoading,
 }: {
   frame: FrameData | null;
+  frameError: FrameError | null;
   zones: ZoneRow[];
   zonesLoading: boolean;
   frameLoading: boolean;
@@ -133,22 +201,16 @@ function ZoneOverlay({
   if (!frame && frameLoading) {
     return <div className="opacity-60 text-sm">Loading frame…</div>;
   }
-  if (!frame || !frame.width || !frame.height) {
-    return (
-      <div className="rounded border border-slate-700 bg-slate-900/40 p-6 text-sm opacity-70">
-        No frame available yet. The ingestion worker must be running and
-        publishing to <code>stream:frames:{"{camera_id}"}</code> for this camera.
-      </div>
-    );
+  if (!frame) {
+    // Error panel above already shows the reason; keep this quiet.
+    if (frameError) return null;
+    return <div className="opacity-60 text-sm">No frame loaded.</div>;
   }
 
   const { objectUrl, width: W, height: H } = frame;
 
   return (
     <div className="rounded-xl border border-slate-700 overflow-hidden bg-black">
-      {/* viewBox uses ACTUAL frame dims, so polygons in pixel coords land
-          without any client-side scaling. preserveAspectRatio keeps the
-          camera's native ratio (1280x720 today, 1920x1080 for GD50). */}
       <svg
         viewBox={`0 0 ${W} ${H}`}
         preserveAspectRatio="xMidYMid meet"
@@ -176,7 +238,6 @@ function ZonePolygon({ zone }: { zone: ZoneRow }) {
   const points = (zone.polygon || []).map(([x, y]) => `${x},${y}`).join(" ");
   if (!points) return null;
 
-  // Label at the polygon centroid so it doesn't jump when polygons overlap.
   const cx = zone.polygon.reduce((s, [x]) => s + x, 0) / zone.polygon.length;
   const cy = zone.polygon.reduce((s, [, y]) => s + y, 0) / zone.polygon.length;
 

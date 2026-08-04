@@ -40,6 +40,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Custom response headers must be enumerated here — browsers hide any
+    # non-CORS-safelisted response header from JS unless exposed. The frame
+    # endpoint publishes native camera dims as X-Frame-Width/Height for
+    # non-browser clients; without this, browser fetches see them as null.
+    expose_headers=["X-Frame-Width", "X-Frame-Height"],
 )
 
 app.mount("/metrics", make_asgi_app())

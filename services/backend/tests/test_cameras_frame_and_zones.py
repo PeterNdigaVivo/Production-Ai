@@ -199,6 +199,25 @@ def test_zones_returns_empty_list_for_camera_without_zones():
     assert r.json() == []
 
 
+def test_cors_middleware_exposes_frame_dimension_headers():
+    """Regression pin for the browser-invisible-headers bug.
+
+    Without expose_headers, browsers hide any non-CORS-safelisted response
+    header from JS. The frame endpoint publishes X-Frame-Width/Height for
+    non-browser consumers; a future edit that drops them from the expose
+    list would silently break every cross-origin caller that reads them.
+    """
+    from fastapi.middleware.cors import CORSMiddleware
+    from app.main import app as real_app
+
+    cors_layers = [m for m in real_app.user_middleware if m.cls is CORSMiddleware]
+    assert len(cors_layers) == 1, "expected exactly one CORS middleware"
+    kwargs = cors_layers[0].kwargs
+    exposed = kwargs.get("expose_headers") or []
+    assert "X-Frame-Width" in exposed, f"X-Frame-Width missing from expose_headers ({exposed})"
+    assert "X-Frame-Height" in exposed, f"X-Frame-Height missing from expose_headers ({exposed})"
+
+
 def test_zones_returns_zone_plus_workstation_name():
     zone = SimpleNamespace(
         id=ZONE_ID,
