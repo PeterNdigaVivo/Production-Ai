@@ -2,7 +2,7 @@
 
 **Owner:** Stephen Nderitu
 **Status:** Phase 0 complete — Phase 1 next
-**Last updated:** 4 August 2026
+**Last updated:** 4 August 2026 (pm)
 
 ---
 
@@ -187,6 +187,54 @@ This log exists so out-of-band work stays recorded and the roadmap above
 remains the single source of truth. Newest first; the roadmap phases stay
 narrative, this section stays factual (one entry per landed commit or short
 group of commits).
+
+### 4 August 2026 (pm) — Promotion pipeline live end-to-end
+
+Onboarding loop `discover → review → promote` proved out for the first
+time against real data. What landed:
+
+- **`promote_zones` maiden run.** Discovery run #3's `S7` (114 dwell-s,
+  polygon `[[566,182],[666,182],[666,282],[566,282]]`) approved and
+  promoted as **Station 6**. Atomic single-transaction insert, overlap-
+  checked against every existing zone on the camera and between new
+  polygons.
+- **False-positive caught in review.** A second `S<n>` blob from the
+  same run — one hot cell, 156 dwell-s, aisle-adjacent — was rejected
+  as "post-lunch standing chatter". Reviewer heuristic recorded so it
+  survives the next onboarding: **real seats = multi-cell high-dwell
+  clusters. Single-cell, aisle-adjacent, low-total-dwell = standing
+  person, not a seat.** discover_zones's structural filters (min box
+  size, existing-zone dedup, far-cutoff) don't catch this — it needs
+  the reviewer.
+- **Audit trail:** each promotion run writes `promotion_log.json`
+  alongside `decisions.json` — camera_id, line, frame dims, promoted
+  rows (workstation_id, zone_id, layout_version, `[created]`/`[reused]`
+  tags, polygon), and rejects with their `reason`. Full paper trail
+  per run.
+- **UTF-8 BOM bug caught by the same smoke test.** Windows PowerShell's
+  `Set-Content -Encoding utf8` writes a BOM (`EF BB BF`) that Python's
+  built-in `json` module refuses. Fixed in `ebc495f` — `load_json_file`
+  helper reads with `encoding='utf-8-sig'` (strips a leading BOM if
+  present, no-op otherwise), both file loads centralised, malformed
+  JSON now surfaces as a clean `STOPPED: <path>: <reason>` line and
+  exit 2 instead of a raw traceback. +4 unit tests
+  (`test_promote_zones.py` → 24 total, backend suite 54 pass / 1
+  pre-existing bcrypt env quirk).
+- **Per-camera resolution correctness landed with `promote_zones`
+  (`fd103e1`).** `discover_zones.py` audited: `--far-cutoff-frac 0.28`
+  replaces the fixed 200 px cutoff (720p → 200 px, **1080p → 302 px**);
+  outputs now go to `/tmp/discover_zones/<camera_id>/` so parallel or
+  successive runs on different cameras never overwrite each other;
+  frame dims already come from the payload. **Ready for the GD50 at
+  1920×1080** without a code change.
+- **Runbook:** `docs/runbooks/camera_onboarding.md` — the one-page
+  loop (add camera → discover during working hours → review overlay
+  in chat → write `decisions.json` → promote → verify with the
+  `worker_events` join). Includes the one-station-one-camera rule for
+  overlapping views.
+- **`insert_stations_4_5.py`** carries a SUPERSEDED banner pointing at
+  `promote_zones`; kept for the historical record of the first
+  camera, not to be extended.
 
 ### 4 August 2026 — Row 1 near-field mapped: Stations 4 & 5 inserted from dwell data
 
