@@ -6,13 +6,14 @@ from app.db.session import get_db
 from app.db.models import Zone, Workstation
 from app.schemas.tenancy import ZoneCreate, ZoneRead
 from app.api.deps import current_user
+from app.services.zone_queries import latest_zone_ids
 
 router = APIRouter(dependencies=[Depends(current_user)])
 
 
 @router.get("", response_model=list[ZoneRead])
 async def list_zones(workstation_id: str | None = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(Zone)
+    stmt = select(Zone).where(Zone.id.in_(latest_zone_ids()))
     if workstation_id:
         stmt = stmt.where(Zone.workstation_id == workstation_id)
     res = await db.execute(stmt)

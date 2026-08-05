@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import require_internal_token
 from app.db.session import get_db
 from app.db.models import Camera, Zone, Workstation
+from app.services.zone_queries import latest_zone_ids
 
 router = APIRouter(dependencies=[Depends(require_internal_token)])
 
@@ -54,6 +55,7 @@ async def list_zones_internal(db: AsyncSession = Depends(get_db)) -> list[dict]:
     stmt = (
         select(Zone, Workstation.camera_id)
         .join(Workstation, Workstation.id == Zone.workstation_id)
+        .where(Zone.id.in_(latest_zone_ids()))
     )
     rows = (await db.execute(stmt)).all()
     return [

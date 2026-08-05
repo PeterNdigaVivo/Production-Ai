@@ -8,6 +8,7 @@ from app.db.models import Camera, Zone, Workstation
 from app.schemas.tenancy import CameraCreate, CameraRead
 from app.api.deps import current_user
 from app.core.config import get_settings
+from app.services.zone_queries import latest_zone_ids
 
 router = APIRouter(dependencies=[Depends(current_user)])
 
@@ -102,6 +103,7 @@ async def list_camera_zones(
         select(Zone, Workstation.id, Workstation.name)
         .join(Workstation, Workstation.id == Zone.workstation_id)
         .where(Workstation.camera_id == camera_id)
+        .where(Zone.id.in_(latest_zone_ids()))
     )
     rows = (await db.execute(stmt)).all()
     return [
