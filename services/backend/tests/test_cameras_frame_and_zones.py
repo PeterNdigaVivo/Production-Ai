@@ -324,6 +324,74 @@ def test_discovery_404_when_file_absent(monkeypatch, tmp_path):
     assert "no discovery run" in r.json()["detail"].lower()
 
 
+# ---------------------------------------------------------------------------- #
+# /tracks — newest per-frame track snapshot for the live view
+# ---------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_tracks_returns_parsed_payload_with_age(fresh_redis):
+    """Happy path: the tracking engine has published a frame; endpoint
+    decodes the JSON string, stamps age_seconds, marks stale=False."""
+    import time as _time
+    payload = {
+        "camera_id": CAM_ID,
+        "ts": _time.time() - 0.5,  # ~half a second old
+        "tracks": [
+            {"track_id": 7, "xyxy": [100, 200, 180, 400], "conf": 0.92,
+             "workstation_id": WS_ID, "hits": 12},
+            {"track_id": 8, "xyxy": [500, 300, 600, 500], "conf": 0.71,
+             "workstation_id": None, "hits": 3},
+        ],
+        "machine_running": {WS_ID: True},
+    }
+    await fresh_redis.xadd(f"stream:tracks:{CAM_ID}", {"json": json.dumps(payload)})
+
+    app = _make_app(camera=SimpleNamespace(id=CAM_ID), redis_client=fresh_redis)
+    with TestClient(app) as c:
+        r = c.get(f"/api/v1/cameras/{CAM_ID}/tracks", headers=_hdr())
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["stale"] is False
+    assert body["camera_id"] == CAM_ID
+    assert body["ts"] == payload["ts"]
+    assert body["age_seconds"] is not None and body["age_seconds"] > 0
+    assert body["age_seconds"] < 5, f"suspiciously old age_seconds: {body['age_seconds']}"
+    assert len(body["tracks"]) == 2
+    assert body["tracks"][0]["workstation_id"] == WS_ID
+    assert body["tracks"][1]["workstation_id"] is None
+    assert body["machine_running"] == {WS_ID: True}
+
+
+def test_tracks_empty_stream_returns_stale_not_404(fresh_redis):
+    """No entries in stream:tracks yet: return 200 stale-true so the live
+    view can render a friendly "pipeline quiet" banner instead of an
+    error state that would look identical to a server failure."""
+    app = _make_app(camera=SimpleNamespace(id=CAM_ID), redis_client=fresh_redis)
+    with TestClient(app) as c:
+        r = c.get(f"/api/v1/cameras/{CAM_ID}/tracks", headers=_hdr())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["stale"] is True
+    assert body["tracks"] == []
+    assert body["ts"] is None
+    assert body["age_seconds"] is None
+
+
+def test_tracks_404_when_camera_unknown(fresh_redis):
+    app = _make_app(camera=None, redis_client=fresh_redis)
+    with TestClient(app) as c:
+        r = c.get(f"/api/v1/cameras/{MISSING_CAM_ID}/tracks", headers=_hdr())
+    assert r.status_code == 404
+    assert "camera not found" in r.json()["detail"].lower()
+
+
+def test_tracks_requires_auth(fresh_redis):
+    app = _make_app(camera=SimpleNamespace(id=CAM_ID), redis_client=fresh_redis)
+    with TestClient(app) as c:
+        r = c.get(f"/api/v1/cameras/{CAM_ID}/tracks")
+    assert r.status_code == 401
+
+
 def test_discovery_404_when_camera_unknown(monkeypatch, tmp_path):
     """Existence check runs before file check — unknown camera → 404 even
     if a stray proposals.json happens to be sitting there."""

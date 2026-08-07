@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -126,6 +127,64 @@ async def list_camera_zones(
         }
         for z, ws_id, ws_name in rows
     ]
+
+
+@router.get("/{camera_id}/tracks")
+async def get_camera_tracks(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_frames_redis),
+) -> dict:
+    """Return the newest per-frame tracking snapshot for a camera.
+
+    The tracking engine publishes each frame's tracks as a JSON-encoded
+    string under the `json` field of `stream:tracks:<camera_id>`
+    (tracking/main.py:106). We XREVRANGE COUNT 1 to get the newest entry
+    and decode it. `age_seconds` is stamped on so the UI can render a
+    staleness indicator without needing its own clock alignment with the
+    server.
+
+    An empty stream is a normal quiet state (pipeline idle, no detections
+    lately) — not an error — so we return a 200 with `stale: true` and
+    `tracks: []` rather than a 404. That keeps the live view's polling
+    loop happy while making the "nothing to show" reason explicit.
+
+    Read-only: no XADD, no side effects.
+    """
+    cam = await db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+
+    key = f"stream:tracks:{camera_id}"
+    entries = await redis.xrevrange(key, count=1)
+    now = time.time()
+    if not entries:
+        return {"camera_id": camera_id, "ts": None, "age_seconds": None,
+                "tracks": [], "machine_running": {}, "stale": True}
+
+    _entry_id, fields = entries[0]
+    raw = fields.get(b"json")
+    if raw is None:
+        # Stream exists but the newest entry is malformed. Treat as stale so
+        # the client shows the same friendly banner it would for empty state.
+        return {"camera_id": camera_id, "ts": None, "age_seconds": None,
+                "tracks": [], "machine_running": {}, "stale": True}
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {"camera_id": camera_id, "ts": None, "age_seconds": None,
+                "tracks": [], "machine_running": {}, "stale": True}
+
+    ts = payload.get("ts")
+    age = (now - float(ts)) if isinstance(ts, (int, float)) else None
+    return {
+        "camera_id": payload.get("camera_id", camera_id),
+        "ts": ts,
+        "age_seconds": age,
+        "tracks": payload.get("tracks", []),
+        "machine_running": payload.get("machine_running", {}),
+        "stale": False,
+    }
 
 
 @router.get("/{camera_id}/discovery")

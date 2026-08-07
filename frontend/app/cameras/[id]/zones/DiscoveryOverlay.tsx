@@ -74,6 +74,28 @@ export function DiscoveryOverlay({
   if (!data) return null;
 
   const cutoff = data.sampling.far_cutoff_px;
+
+  // Marker sizes scale with frame resolution so the overlay reads at both
+  // 720p and 1080p. The previous absolute values (r=5, strokeWidth=2) were
+  // visually invisible against a downscaled frame in the browser; anchor
+  // to a fraction of the shorter frame edge.
+  const shortEdge = Math.min(frameW, frameH);
+  const dotR = Math.max(12, shortEdge * 0.014);           // ~10px at 720p
+  const dotStroke = Math.max(3, shortEdge * 0.004);
+  const polyStroke = Math.max(4, shortEdge * 0.005);
+  const cutoffStroke = Math.max(4, shortEdge * 0.005);
+  const proposalFontPx = Math.max(24, shortEdge * 0.028); // large enough to read after scale-down
+  const skippedFontPx = Math.max(22, shortEdge * 0.025);
+  const cutoffFontPx = Math.max(24, shortEdge * 0.028);
+
+  // If the endpoint returned data but every list is empty, the operator
+  // would see a completely blank overlay and think the toggle broke. Note
+  // that condition explicitly (banner-in-svg).
+  const nothingToDraw =
+    data.proposals.length === 0
+    && data.skipped_inside_existing_zone.length === 0
+    && !(cutoff > 0);
+
   return (
     <g style={{ pointerEvents: "none" }}>
       {/* Far cutoff — operators above this line are too small to track. */}
@@ -81,16 +103,20 @@ export function DiscoveryOverlay({
         <>
           <line
             x1={0} y1={cutoff} x2={frameW} y2={cutoff}
-            stroke="rgba(163, 230, 53, 0.75)"
-            strokeWidth={2}
-            strokeDasharray="8 6"
+            stroke="rgba(163, 230, 53, 0.9)"
+            strokeWidth={cutoffStroke}
+            strokeDasharray="16 10"
             vectorEffect="non-scaling-stroke"
           />
+          <rect
+            x={8} y={cutoff - cutoffFontPx - 10}
+            width={cutoffFontPx * 12} height={cutoffFontPx + 8}
+            fill="rgba(0, 0, 0, 0.6)" rx={4}
+          />
           <text
-            x={12} y={cutoff - 6}
-            fill="rgba(163, 230, 53, 0.95)"
-            stroke="black" strokeWidth={0.4} paintOrder="stroke"
-            style={{ fontSize: 13, fontWeight: 600 }}
+            x={16} y={cutoff - 8}
+            fill="rgba(163, 230, 53, 1)"
+            style={{ fontSize: cutoffFontPx, fontWeight: 700 }}
           >
             far cutoff · {cutoff}px
           </text>
@@ -104,18 +130,18 @@ export function DiscoveryOverlay({
           <g key={p.label}>
             <polygon
               points={pts}
-              fill="rgba(163, 230, 53, 0.12)"
-              stroke="rgba(163, 230, 53, 0.85)"
-              strokeWidth={2}
-              strokeDasharray="6 4"
+              fill="rgba(163, 230, 53, 0.20)"
+              stroke="rgba(163, 230, 53, 1)"
+              strokeWidth={polyStroke}
+              strokeDasharray="14 8"
               vectorEffect="non-scaling-stroke"
             />
             <text
               x={p.center[0]} y={p.center[1]}
               textAnchor="middle" dominantBaseline="middle"
               fill="rgba(163, 230, 53, 1)"
-              stroke="black" strokeWidth={0.5} paintOrder="stroke"
-              style={{ fontSize: 14, fontWeight: 600 }}
+              stroke="black" strokeWidth={2} paintOrder="stroke"
+              style={{ fontSize: proposalFontPx, fontWeight: 700 }}
             >
               {p.label} · {Math.round(p.dwell_seconds)}s
             </text>
@@ -123,28 +149,50 @@ export function DiscoveryOverlay({
         );
       })}
 
-      {/* Skipped-inside dwell centres — small dot + dwell label. These are
-          the seats we DIDN'T re-propose because they land inside an
-          existing zone; they still deserve visual confirmation. */}
+      {/* Skipped-inside dwell centres — the seats we DIDN'T re-propose
+          because they land inside an existing zone. Bigger dot + high-
+          contrast label so they're actually readable on a downscaled
+          frame. */}
       {data.skipped_inside_existing_zone.map((s, i) => (
         <g key={`skip-in-${i}`}>
           <circle
             cx={s.center[0]} cy={s.center[1]}
-            r={5}
-            fill="rgba(56, 189, 248, 0.9)"
-            stroke="white" strokeWidth={1}
+            r={dotR}
+            fill="rgba(56, 189, 248, 0.95)"
+            stroke="white" strokeWidth={dotStroke}
             vectorEffect="non-scaling-stroke"
           />
           <text
-            x={s.center[0] + 8} y={s.center[1] - 8}
+            x={s.center[0] + dotR + 6} y={s.center[1] - dotR - 4}
             fill="rgba(56, 189, 248, 1)"
-            stroke="black" strokeWidth={0.4} paintOrder="stroke"
-            style={{ fontSize: 12, fontWeight: 500 }}
+            stroke="black" strokeWidth={2} paintOrder="stroke"
+            style={{ fontSize: skippedFontPx, fontWeight: 700 }}
           >
             {Math.round(s.dwell_seconds)}s
           </text>
         </g>
       ))}
+
+      {/* Data present but nothing to draw — surface that instead of
+          rendering an empty overlay the operator can't tell apart from a
+          broken toggle. */}
+      {nothingToDraw && (
+        <g>
+          <rect
+            x={frameW * 0.05} y={frameH * 0.05}
+            width={frameW * 0.9} height={proposalFontPx * 2}
+            fill="rgba(0, 0, 0, 0.7)" rx={6}
+          />
+          <text
+            x={frameW * 0.5} y={frameH * 0.05 + proposalFontPx * 1.2}
+            textAnchor="middle"
+            fill="rgba(163, 230, 53, 1)"
+            style={{ fontSize: proposalFontPx, fontWeight: 700 }}
+          >
+            Discovery loaded but it has no proposals, skipped centres, or far cutoff to show.
+          </text>
+        </g>
+      )}
     </g>
   );
 }

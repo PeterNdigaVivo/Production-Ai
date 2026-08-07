@@ -188,6 +188,12 @@ export default function CameraZoneViewerPage({ params }: { params: { id: string 
           <div className="font-mono text-xs opacity-60">{cameraId}</div>
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href={`/cameras/${cameraId}/live`}
+            className="rounded bg-emerald-700 hover:bg-emerald-600 px-3 py-2 text-sm font-semibold"
+          >
+            ▶ Live view
+          </Link>
           <button
             onClick={() => setRefreshTick((t) => t + 1)}
             disabled={frameLoading}
