@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -9,6 +12,12 @@ from app.schemas.tenancy import CameraCreate, CameraRead
 from app.api.deps import current_user
 from app.core.config import get_settings
 from app.services.zone_queries import latest_zone_ids
+
+# Where discover_zones writes its per-camera proposals. Kept as a module
+# constant (not a settings knob) because it must match the script's own
+# hard-coded default in app/scripts/discover_zones.py — the two live on
+# the same filesystem in the same container.
+DISCOVERY_DIR = Path("/tmp/discover_zones")
 
 router = APIRouter(dependencies=[Depends(current_user)])
 
@@ -117,6 +126,37 @@ async def list_camera_zones(
         }
         for z, ws_id, ws_name in rows
     ]
+
+
+@router.get("/{camera_id}/discovery")
+async def get_camera_discovery(
+    camera_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Serve the most recent dwell-discovery proposals for this camera.
+
+    Reads `/tmp/discover_zones/{camera_id}/proposals.json` — the file that
+    `app.scripts.discover_zones` writes on each passive-observation run.
+    The zone editor overlays these as reference (measured dwell centres,
+    proposal polygons, far-cutoff line) so operators can position seats
+    against real data rather than eyeballing the raw frame.
+
+    Serves the last run's file only — never triggers a fresh discovery
+    (that would tie up the request thread for minutes). 404 when the file
+    is absent so the UI can prompt "run discover_zones first".
+    """
+    cam = await db.get(Camera, camera_id)
+    if not cam:
+        raise HTTPException(404, "camera not found")
+
+    path = DISCOVERY_DIR / camera_id / "proposals.json"
+    if not path.exists():
+        raise HTTPException(404, f"no discovery run found for camera {camera_id}")
+    try:
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as e:
+        # Corrupt file — surface a 5xx so callers know it's not "just missing".
+        raise HTTPException(500, f"discovery file is not valid JSON: {e}")
 
 
 # NOTE: the camera heartbeat endpoint moved to the internal router

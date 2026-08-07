@@ -18,9 +18,11 @@ os.environ.setdefault("JWT_SECRET", "x" * 40)
 os.environ.setdefault("INTERNAL_SERVICE_TOKEN", "y" * 32)
 
 import io
+import json
 import struct
 import uuid
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import fakeredis.aioredis as fr
@@ -240,3 +242,96 @@ def test_zones_returns_zone_plus_workstation_name():
     assert row["kind"] == "seat"
     assert row["polygon"] == [[10, 20], [110, 20], [110, 120], [10, 120]]
     assert row["layout_version"] == 1
+
+
+# ---------------------------------------------------------------------------- #
+# /discovery — serves the last discover_zones run's proposals.json
+# ---------------------------------------------------------------------------- #
+def _sample_discovery_doc() -> dict:
+    """Matches the actual proposals.json shape written by discover_zones.py."""
+    return {
+        "generated_at": "2026-08-05T10:00:00+00:00",
+        "camera_id": CAM_ID,
+        "sampling": {
+            "requested_minutes": 20.0,
+            "actual_seconds": 1200,
+            "interrupted": False,
+            "samples": 5000,
+            "distinct_tracks": 12,
+            "frame": {"w": 1280, "h": 720},
+            "grid_cell_px": 16,
+            "dwell_threshold_s": 90.0,
+            "far_cutoff_frac": 0.28,
+            "far_cutoff_px": 200,
+        },
+        "existing_zones_count": 3,
+        "proposals": [
+            {
+                "label": "S1",
+                "polygon": [[100, 300], [200, 300], [200, 400], [100, 400]],
+                "bbox": [100, 300, 200, 400],
+                "center": [150.0, 350.0],
+                "dwell_seconds": 245.6,
+                "peak_cell": {"col": 9, "row": 21, "seconds": 88.3, "px": [144, 336]},
+            },
+        ],
+        "skipped_too_far": [{"center": [400, 150], "dwell_seconds": 30.1}],
+        "skipped_inside_existing_zone": [{"center": [500, 500], "dwell_seconds": 120.0}],
+    }
+
+
+def test_discovery_requires_auth(monkeypatch, tmp_path):
+    from app.api.v1.endpoints import cameras as cameras_ep
+    monkeypatch.setattr(cameras_ep, "DISCOVERY_DIR", tmp_path)
+    app = _make_app(camera=SimpleNamespace(id=CAM_ID))
+    with TestClient(app) as c:
+        r = c.get(f"/api/v1/cameras/{CAM_ID}/discovery")
+    assert r.status_code == 401
+
+
+def test_discovery_returns_parsed_proposals(monkeypatch, tmp_path):
+    """Happy path: the file exists → its parsed JSON is returned verbatim."""
+    from app.api.v1.endpoints import cameras as cameras_ep
+    cam_dir = tmp_path / CAM_ID
+    cam_dir.mkdir(parents=True)
+    doc = _sample_discovery_doc()
+    (cam_dir / "proposals.json").write_text(json.dumps(doc), encoding="utf-8")
+    monkeypatch.setattr(cameras_ep, "DISCOVERY_DIR", tmp_path)
+
+    app = _make_app(camera=SimpleNamespace(id=CAM_ID))
+    with TestClient(app) as c:
+        r = c.get(f"/api/v1/cameras/{CAM_ID}/discovery", headers=_hdr())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["camera_id"] == CAM_ID
+    assert body["sampling"]["frame"] == {"w": 1280, "h": 720}
+    assert body["sampling"]["far_cutoff_px"] == 200
+    assert len(body["proposals"]) == 1
+    assert body["proposals"][0]["dwell_seconds"] == 245.6
+    assert body["skipped_inside_existing_zone"][0]["center"] == [500, 500]
+
+
+def test_discovery_404_when_file_absent(monkeypatch, tmp_path):
+    """No discover_zones run has produced a file yet → 404 with a clear
+    detail so the UI can prompt the operator to run discovery first."""
+    from app.api.v1.endpoints import cameras as cameras_ep
+    monkeypatch.setattr(cameras_ep, "DISCOVERY_DIR", tmp_path)
+
+    app = _make_app(camera=SimpleNamespace(id=CAM_ID))
+    with TestClient(app) as c:
+        r = c.get(f"/api/v1/cameras/{CAM_ID}/discovery", headers=_hdr())
+    assert r.status_code == 404
+    assert "no discovery run" in r.json()["detail"].lower()
+
+
+def test_discovery_404_when_camera_unknown(monkeypatch, tmp_path):
+    """Existence check runs before file check — unknown camera → 404 even
+    if a stray proposals.json happens to be sitting there."""
+    from app.api.v1.endpoints import cameras as cameras_ep
+    monkeypatch.setattr(cameras_ep, "DISCOVERY_DIR", tmp_path)
+
+    app = _make_app(camera=None)  # db.get(Camera, ...) returns None
+    with TestClient(app) as c:
+        r = c.get(f"/api/v1/cameras/{MISSING_CAM_ID}/discovery", headers=_hdr())
+    assert r.status_code == 404
+    assert "camera not found" in r.json()["detail"].lower()
