@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Development compose. For production overrides see docker-compose.prod.yml.
 
 x-common-env: &common-env
