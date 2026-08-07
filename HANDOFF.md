@@ -112,6 +112,20 @@ Compact. Longer stories are in the `ROADMAP.md` change log.
    Redis `--force-recreate` while consumers were live briefly broke
    the pipeline (recovered on its own; automated test still TODO). If
    in doubt: collect first, restart last.
+7. **PowerShell + `docker exec` + double quotes = silent corruption.**
+   PowerShell 5.1 (the default on the Windows tower) does not escape
+   inner double quotes when passing an argv through `docker exec`. Any
+   payload with `"` — inline SQL like `-c "SELECT …"`, or a curl call
+   like `curl -H "Authorization: Bearer …"` — arrives at the container
+   mangled, with no error. Symptoms seen so far: a phantom `(1 row)`
+   with an empty result set, and `curl: (3) URL rejected: No URL
+   specified`. The fix is always the same shape: write the payload to
+   a file, `docker cp` it into the container, then run it with
+   `psql -f <file>` or `bash <file>`. Never inline.
+8. **Default branch is `claude/happy-hamilton-otnhj9`, not `main`.**
+   There is no `main` branch on this repo. Any tooling or teammate
+   command that assumes `origin/main` will fail. Set upstream / base
+   comparisons against `claude/happy-hamilton-otnhj9` explicitly.
 
 ---
 
