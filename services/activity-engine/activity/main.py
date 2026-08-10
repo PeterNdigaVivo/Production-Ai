@@ -45,14 +45,19 @@ STREAM_TRACKS = os.environ.get("REDIS_STREAM_TRACKS", "stream:tracks")
 STREAM_EVENTS = os.environ.get("REDIS_STREAM_EVENTS", "stream:events")
 GROUP = "activity-engine"
 
-# Distinguish a legitimately-quiet pipeline (worker on break, no one in frame)
-# from a broken pipeline (ffmpeg dropped, backend restart). If the gap
-# between successive tracks payloads exceeds THIS threshold, we hold state
-# and log a warning instead of emitting AWAY on every seat — recording
-# operators as absent because the video feed died is the exact class of
-# number that destroys dashboard trust.
-DETECTION_TARGET_FPS = float(os.environ.get("DETECTION_TARGET_FPS", "4"))
-PIPELINE_OUTAGE_SECONDS = 3.0 / DETECTION_TARGET_FPS
+# Absolute threshold — deliberately NOT derived from DETECTION_TARGET_FPS.
+# Roadmap capacity ceiling is 3–4 fps for 2 cameras and detection is capped
+# at 2/4 CPUs, so a target-fps-derived threshold trips on every frame
+# whenever the pipeline runs below its target, silently disabling the
+# engine. 10s is >100× the target inter-sample interval at 4fps and
+# tolerates a ~20× throughput collapse to 0.5fps, while still catching an
+# ffmpeg drop / backend restart quickly. One value, one place.
+PIPELINE_OUTAGE_SECONDS = 10.0
+
+# How often to re-warn about the same legacy-payload condition per camera.
+# Log on the first bad frame, then hold for this many seconds before
+# warning again — never per frame.
+LEGACY_WARN_INTERVAL_S = 60.0
 
 
 class CameraState:
@@ -68,6 +73,11 @@ class CameraState:
         # Last successfully-processed tracks-payload ts (seconds). Used to
         # detect pipeline outages that must NOT be recorded as AWAY.
         self.last_payload_ts: float | None = None
+        # Once-per-outage log: True while we are in a detected outage.
+        # Flips False again on the first payload inside the threshold.
+        self.outage_active: bool = False
+        # Rate-limit the "no workstations key" warning (see handler).
+        self.last_legacy_warn_ts: float | None = None
 
 
 def _centroid(xyxy):
@@ -82,26 +92,67 @@ def _make_handler(redis: Redis, camera_id: str, state: CameraState):
         machine_map = payload.get("machine_running", {})  # workstation_id -> bool
 
         # Roster: every workstation this camera can attribute to (see the
-        # invariant in tracking/main.py where the roster is derived). Missing
-        # key on a legacy payload → empty roster → we skip all FSM updates
-        # for that frame rather than defaulting to something wrong.
-        roster: list[str] = list(payload.get("workstations") or [])
+        # invariant in tracking/main.py where the roster is derived).
+        # ABSENCE of the key is a legacy/deploy-order symptom, not a quiet
+        # factory. See BLOCKER 2 in the code review that shipped this fix.
+        roster_raw = payload.get("workstations")
+        if roster_raw is None:
+            # Legacy or partial-deploy payload. Rate-limit the warning so it
+            # doesn't spam at 4fps for a full deploy window.
+            now = time.time()
+            if (state.last_legacy_warn_ts is None
+                    or now - state.last_legacy_warn_ts > LEGACY_WARN_INTERVAL_S):
+                log.warning(
+                    "activity.legacy_tracks_payload_no_roster",
+                    camera=camera_id,
+                    hint=("tracks payload has no 'workstations' key — "
+                          "tracking-engine is likely running older code "
+                          "than activity-engine; holding FSM state"),
+                )
+                state.last_legacy_warn_ts = now
+            # Hold state: no roster means we cannot know present/absent, and
+            # a rolling deploy where activity restarts before tracking must
+            # not wipe every FSM (BLOCKER 2 in the review). Return without
+            # touching fsms or last_centroid.
+            state.last_payload_ts = ts
+            return True
+        roster: list[str] = list(roster_raw)
 
-        # Pipeline-outage guard. A long gap between payloads is a broken
-        # pipeline, not an empty factory. Hold state and warn.
-        outage = False
+        # Pipeline-outage guard. Long gaps between payloads mean the video
+        # feed died (ffmpeg drop, backend restart, network glitch). We
+        # process the current frame normally but PRUNE each FSM's window of
+        # any samples older than the gap start, so the gap contributes no
+        # vote weight to the debounce vote. Skipping the frame does NOT
+        # solve the weighting problem: for gaps shorter than the debounce
+        # window the last pre-outage sample would still get the full gap as
+        # weight, crediting an unobserved state.
+        outage_gap: float | None = None
         if state.last_payload_ts is not None:
             gap = ts - state.last_payload_ts
             if gap > PIPELINE_OUTAGE_SECONDS:
-                log.warning("activity.pipeline_outage_hold_state",
-                            camera=camera_id, gap_seconds=round(gap, 2),
-                            threshold=PIPELINE_OUTAGE_SECONDS)
-                outage = True
+                outage_gap = gap
+                if not state.outage_active:
+                    log.warning(
+                        "activity.pipeline_outage_start",
+                        camera=camera_id,
+                        gap_seconds=round(gap, 2),
+                        threshold=PIPELINE_OUTAGE_SECONDS,
+                    )
+                    state.outage_active = True
+                # Prune all FSMs' windows so pre-outage samples don't lend
+                # weight to the gap. Cutoff = current frame's ts (strict):
+                # this drops EVERY pre-outage sample, including the one
+                # right at the gap start. Keeping any sample earlier than
+                # `ts` would let its weight become `ts - that.ts`, i.e.
+                # the whole gap — the exact bug the guard is here to stop.
+                for fsm in state.fsms.values():
+                    fsm.discard_samples_before(ts)
+            else:
+                if state.outage_active:
+                    log.info("activity.pipeline_outage_resumed",
+                             camera=camera_id, gap_seconds=round(gap, 2))
+                    state.outage_active = False
         state.last_payload_ts = ts
-        if outage:
-            # State held; do NOT run FSM.update this frame. The next in-window
-            # payload resumes normal processing.
-            return True
 
         # Group this frame's tracks by workstation. A track with no
         # workstation is an aisle-walker; it never drives any FSM (per the
@@ -168,16 +219,21 @@ def _make_handler(redis: Redis, camera_id: str, state: CameraState):
                 }, maxlen=10_000, approximate=True)
 
         # Bound the registries: evict any workstation no longer on the roster
-        # (seat deleted, seat re-zoned onto another camera). Also fixes the
-        # unbounded-growth issue the previous track-keyed dicts had under
-        # track-ID churn.
-        stale = set(state.fsms) - set(roster)
-        for ws_id in stale:
-            state.fsms.pop(ws_id, None)
-            state.last_centroid.pop(ws_id, None)
-        if stale:
-            log.info("activity.evict_stale_workstations",
-                     camera=camera_id, workstations=sorted(stale))
+        # (seat deleted, seat re-zoned onto another camera). GUARD: only
+        # evict when the roster is non-empty. An empty roster on this path
+        # is a legacy/partial-deploy signal handled above, but belt-and-
+        # braces — a caller change that lets an empty list through must not
+        # wipe every FSM for the camera (BLOCKER 2 in the review). No log
+        # line, indistinguishable from a quiet factory, HANDOFF lesson 1
+        # in a new disguise.
+        if roster:
+            stale = set(state.fsms) - set(roster)
+            for ws_id in stale:
+                state.fsms.pop(ws_id, None)
+                state.last_centroid.pop(ws_id, None)
+            if stale:
+                log.info("activity.evict_stale_workstations",
+                         camera=camera_id, workstations=sorted(stale))
 
         return True
     return handle

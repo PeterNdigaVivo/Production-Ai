@@ -203,7 +203,7 @@ group of commits).
   - `rollup.workers_idle_too_long`: ranks per workstation (a workstation belongs to exactly one camera per the non-nullable FK, so camera_id was redundant too).
   - `workers/tasks.check_idle_workers`: dedup key changed to `"{camera_id}:{workstation_id}"` — per-seat is the correct semantics, not a migration artefact.
   - `worker_events.worker_track_id` retained as audit-only metadata; docstring updated on the model.
-- **Historical rows.** Not backfilled. Historical windows will still show zero AWAY. Rows written by the old track-keyed FSM re-summarize under the new workstation-alone LEAD partition; the union-of-intervals safety net stays for that and for accidental same-ts double writes.
+- **Historical rows.** Not backfilled. Historical windows will still show zero AWAY. The brief originally said "existing worker_events rows are unaffected" — that was wrong. Repartitioning LEAD by workstation_id alone changes how pre-fix rows re-summarize: roughly three weeks of existing data will show shifted WORKING/IDLE figures on any per-workstation query, because chains that previously ran per-track now run per-seat. Expect it, do not read it as a regression. The union-of-intervals safety net stays for that and for accidental same-ts double writes.
 
 **Tests (7 new + 4 updated).**
 - New `services/activity-engine/tests/test_state_machine.py` — first tests the FSM has ever had. Covers: sustained absence → AWAY; brief absence < debounce → no flip; AWAY→WORKING on return; `machine_running=True` + `present=False` still resolves to AWAY (the `_candidate` present-check wins); time-weighted vote ignores a 30fps AWAY burst against a 50s WORKING baseline; `total >= 3.0` evidence floor guard; stable WORKING happy path.
@@ -218,9 +218,14 @@ group of commits).
 
 **Migration.** None. Code-only.
 
-**Deploy note.** Acknowledge any open `worker_idle` alerts before deploying — old payloads carry the track-shaped dedup key and would collide with the new shape until they auto-close.
+**Deploy notes.**
+1. Acknowledge any open `worker_idle` alerts before deploying — old payloads carry the track-shaped dedup key and would collide with the new shape until they auto-close.
+2. **Deploy order is not optional: tracking-engine must be updated at or before activity-engine.** If activity-engine restarts first, it sees `stream:tracks` payloads with no `workstations` key and holds state (with a rate-limited warning) — the engine emits nothing until tracking-engine also rolls. Handler holds state rather than wiping it, and empty rosters do NOT evict; both are guarded and tested. See HANDOFF hard-won lesson on this.
+3. **Expected observation, not a regression.** Historical `worker_events` rows will re-summarize under the new LEAD partition (workstation-alone). Any per-workstation WORKING/IDLE figure on the last ~3 weeks of data will shift — sometimes significantly, where two tracks were previously chained separately at one seat. Do not read the shift as a regression.
 
-Commit: `feat(activity): key FSM to workstation, make AWAY reachable`.
+**Follow-up commit** (`fix(activity): outage-guard threshold; empty-roster guard; handler tests`): review of the initial commit surfaced two blockers before deploy. (1) Outage threshold was derived from `DETECTION_TARGET_FPS` (0.75s at 4fps) which would trip on any pipeline running below its target rate, silently disabling the engine — replaced with an absolute 10s and, on trip, the handler processes the frame normally after pruning FSM windows so the gap contributes no vote weight (was: skipping the frame, which left the last pre-outage sample crediting the full gap for gaps shorter than the debounce). (2) Empty `workstations` in a legacy or partial-deploy payload used to enter the eviction loop and wipe every FSM without a log; now legacy-key-missing holds state with a rate-limited warning, and even an explicitly-empty roster does not evict. Handler-level tests (10 cases) added covering both blockers + roster iteration + multi-track selection + low-frame-rate resilience.
+
+Commits: `feat(activity): key FSM to workstation, make AWAY reachable`, `fix(activity): outage-guard threshold; empty-roster guard; handler tests`.
 
 ### 4 August 2026 (pm) — Promotion pipeline live end-to-end
 

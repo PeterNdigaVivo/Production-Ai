@@ -132,6 +132,15 @@ Compact. Longer stories are in the `ROADMAP.md` change log.
    There is no `main` branch on this repo. Any tooling or teammate
    command that assumes `origin/main` will fail. Set upstream / base
    comparisons against `claude/happy-hamilton-otnhj9` explicitly.
+9. **Cross-service payload contracts have a deploy order.** When one
+   service starts writing a new field to a Redis stream that another
+   service starts reading, the producer must roll first. Concretely
+   for the 10 Aug activity-FSM re-key: `tracking-engine` adds
+   `workstations` to `stream:tracks`; `activity-engine` needs it to
+   emit AWAY. Deploy activity first and it sees legacy payloads with
+   no key, holds state, and warns — the engine emits nothing until
+   tracking is also updated. Rolling deploys of paired services:
+   producer first, always.
 
 ---
 

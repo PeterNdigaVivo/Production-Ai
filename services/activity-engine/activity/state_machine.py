@@ -39,6 +39,26 @@ class WorkerActivityFSM:
             return "IDLE"
         return "WORKING"
 
+    def discard_samples_before(self, cutoff_ts: float) -> None:
+        """Prune all in-window samples with ts < cutoff_ts.
+
+        Called by the handler when a pipeline outage is detected, BEFORE
+        calling update() on the post-outage frame. Without this, the last
+        pre-outage sample's weight is `next.ts - self.ts`, i.e. the entire
+        gap — meaning a 30s outage would credit 30s of unobserved WORKING
+        (or whatever the state was) to the debounce vote. Dropping the
+        pre-outage samples entirely makes the gap contribute no vote weight,
+        which is the honest reading.
+
+        Long gaps (> debounce) already self-heal via the `t >= cutoff`
+        filter in update() — this helper only matters for gaps SHORTER than
+        the debounce window.
+        """
+        self.window = deque(
+            ((t, s) for (t, s) in self.window if t >= cutoff_ts),
+            maxlen=self.window.maxlen,
+        )
+
     def update(self, ts: float, sig: ActivitySignals) -> str:
         cand = self._candidate(sig)
         self.window.append((ts, cand))
