@@ -1,21 +1,21 @@
-"""Regression guard for BOTH rollup and analytics: overlapping tracks at one
-workstation must not double-count.
+"""Regression guard for the union-of-intervals safety net.
 
-Before the fix, `rollup_window()` and `compute_line_kpis()` partitioned by
-`(workstation_id, worker_track_id)` and summed the resulting intervals — two
-tracks alive concurrently at the same workstation contributed the sum of
-their durations, not the union, so a 300s window reported >300s of state
-time. On a live camera we observed effective_working_s=2796 in a 300s window.
+History. `rollup_window()` and `compute_line_kpis()` used to sum LEAD-based
+intervals per (workstation, track_id) — with the phantom-track bug that
+produced ID divergence in production, a 300s window reported 2796s. The
+first fix added the gaps-and-islands CTE (app/services/intervals.py) that
+merges overlapping intervals per (workstation, state).
 
-The fix is app/services/intervals.merged_state_seconds — a gaps-and-islands
-CTE that merges overlapping intervals per (workstation, state). Both callers
-now go through it.
+Then, when the FSM was re-keyed by workstation to make AWAY reachable,
+LEAD's partition was reduced to workstation_id alone (worker_track_id
+became a sentinel, see intervals.py docstring). The union-of-islands logic
+stays as the safety net for accidental same-ts double writes and for the
+historical rows written before the re-key.
 
 These tests reproduce the gaps-and-islands SQL in dialect-agnostic form
-(julianday instead of EXTRACT(epoch) so SQLite works) and prove that:
-  * three tracks all WORKING for the full window → total <= window length
-  * two tracks with a real gap → total = sum-of-gap-free-slices
-The production query itself is PG-dialect and is exercised in integration.
+(julianday instead of EXTRACT(epoch) so SQLite works) with the CURRENT
+production partition (workstation_id alone). The production query itself is
+PG-dialect and is exercised in integration.
 
 Run: pytest tests/test_intervals_overlap.py -v
 """
@@ -61,7 +61,7 @@ async def conn():
 async def _merged(conn, ws_ids, window_start, window_end):
     """SQLite-flavoured reproduction of merged_state_seconds()."""
     next_ts = func.lead(we.c.ts).over(
-        partition_by=[we.c.workstation_id, we.c.worker_track_id],
+        partition_by=[we.c.workstation_id],
         order_by=we.c.ts,
     ).label("next_ts")
     end_ts = func.min(
@@ -162,11 +162,19 @@ async def test_disjoint_intervals_sum_to_slice_total(conn):
     ws = "WS-01"
     win_start = _at(300)
     win_end = NOW
-    # Timeline (t=0 is NOW; window is [-300, 0]):
-    #   track 1: WORKING @ -300, WAITING_FOR_INPUT @ -200 (open through win_end)
-    #   track 2: WORKING @ -100, no next event (open through win_end)
-    # WORKING union = [-300, -200] ∪ [-100, 0] = 100 + 100 = 200s (disjoint)
-    # WAITING_FOR_INPUT for track 1 = [-200, 0] clamped = 200s
+    # Historical-row scenario. Timeline (t=0 is NOW; window is [-300, 0]):
+    #   -300 WORKING (track 1)
+    #   -200 WAITING_FOR_INPUT (track 1)
+    #   -100 WORKING (track 2)
+    # Under the workstation-alone LEAD partition:
+    #   [-300,-200) WORKING = 100s
+    #   [-200,-100) WAITING = 100s   (terminated by the next event at -100)
+    #   [-100, NOW)  WORKING = 100s
+    # Union WORKING = 100 + 100 = 200s (disjoint slices, correctly summed).
+    # Union WAITING = 100s.
+    # NOTE: pre-fix (partition by ws+track) this test asserted WAITING=200s
+    # because track 1's WAITING stretched unterminated to NOW. That was an
+    # artefact of the per-track partition, not the truth on the ground.
     await conn.execute(insert(we), [
         dict(ts=_at(300), workstation_id=ws, worker_track_id=1, state="WORKING"),
         dict(ts=_at(200), workstation_id=ws, worker_track_id=1, state="WAITING_FOR_INPUT"),
@@ -174,7 +182,7 @@ async def test_disjoint_intervals_sum_to_slice_total(conn):
     ])
     d = await _merged(conn, [ws], win_start, win_end)
     assert d[(ws, "WORKING")] == pytest.approx(200, abs=1.0)
-    assert d[(ws, "WAITING_FOR_INPUT")] == pytest.approx(200, abs=1.0)
+    assert d[(ws, "WAITING_FOR_INPUT")] == pytest.approx(100, abs=1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -186,11 +194,17 @@ async def test_partial_overlap_yields_union_not_sum(conn):
     ws = "WS-01"
     win_start = _at(300)
     win_end = NOW
-    # track 1: WORKING at t=-300, IDLE at t=-100  (200s of WORKING)
-    # track 2: WORKING at t=-200, IDLE at t=-50   (150s of WORKING)
-    # Overlap of WORKING: [-200, -100] = 100s
-    # Union: [-300, -100] ∪ [-200, -50] = [-300, -50] = 250s
-    # Sum-per-track would be 200 + 150 = 350s — clearly wrong.
+    # Historical-row scenario with two overlapping tracks. Post-fix the FSM
+    # is workstation-keyed and cannot produce this event shape live, but old
+    # rows in the database still do. Under the workstation-alone LEAD
+    # partition, all four events sort by ts and reconstruct as:
+    #   -300 WORKING → next=-200 → 100s
+    #   -200 WORKING → next=-100 → 100s   (adjacent to prior WORKING → merges)
+    #   -100 IDLE    → next=-50  →  50s
+    #    -50 IDLE    → next=NOW  →  50s   (adjacent to prior IDLE → merges)
+    # Union WORKING = [-300, -100) = 200s. Union IDLE = [-100, NOW) = 100s.
+    # Sum-per-track under the OLD partition would report 350s of WORKING —
+    # the exact 2796s-shape bug this whole file exists to guard against.
     await conn.execute(insert(we), [
         dict(ts=_at(300), workstation_id=ws, worker_track_id=1, state="WORKING"),
         dict(ts=_at(100), workstation_id=ws, worker_track_id=1, state="IDLE"),
@@ -198,4 +212,4 @@ async def test_partial_overlap_yields_union_not_sum(conn):
         dict(ts=_at(50),  workstation_id=ws, worker_track_id=2, state="IDLE"),
     ])
     d = await _merged(conn, [ws], win_start, win_end)
-    assert d[(ws, "WORKING")] == pytest.approx(250, abs=1.0)
+    assert d[(ws, "WORKING")] == pytest.approx(200, abs=1.0)

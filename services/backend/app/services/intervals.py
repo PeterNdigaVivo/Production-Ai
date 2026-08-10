@@ -1,14 +1,8 @@
 """Per-(workstation, state) duration inside [window_start, window_end),
-computed as the UNION of intervals across all track_ids at each workstation.
-
-Why not simply sum LEAD-based intervals per track (the previous behaviour):
-a workstation seats ONE operator, so total time across all states must never
-exceed the window length. Summing per track over-counts whenever two tracks
-are alive concurrently — with the phantom-track bug that produced ID
-divergence in production, a 300s window reported 2796s effective_working.
+computed as the UNION of intervals per workstation.
 
 Approach: classic gaps-and-islands.
-  1. For each (workstation, track), reconstruct the state interval from
+  1. Per workstation, reconstruct the state interval from
      [ts, LEAD(ts) clamped to window_end).
   2. Order intervals per (workstation, state) by start. Mark a new "island"
      whenever the current interval starts strictly beyond the running max of
@@ -17,9 +11,25 @@ Approach: classic gaps-and-islands.
   3. Per island, coverage is (MAX(end) - MIN(start)). Sum island coverages
      per (workstation, state).
 
+Partitioning. LEAD partitions on `workstation_id` alone. Previously it
+partitioned on (workstation_id, worker_track_id) — but with the FSM
+re-keyed to workstation (activity-engine/main.py) worker_track_id is a
+sentinel and no longer carries a partition-worthy meaning. Two consequences:
+
+  * AWAY events (which have no owning track — the absence of a track IS the
+    event) chain LEAD correctly against the preceding WORKING event. Under
+    the old partition the WORKING interval clamped to window_end (no next
+    event in its track) AND the AWAY event started a fresh partition,
+    double-counting at exactly the transitions this fix introduces.
+  * Historical rows written pre-fix by the track-keyed activity engine
+    re-summarize under the new partition (their intervals merge across
+    tracks at one workstation instead of being reconstructed track-by-
+    track). The union-of-intervals island logic stays as the safety net
+    for accidental same-ts double writes and for that historical
+    re-summarization — do not remove it.
+
 Both rollup.py (batch, Celery) and analytics.py (live API, /kpis) call this
-helper so the two paths cannot drift again — that was the docstring claim
-that turned out to be false.
+helper so the two paths cannot drift again.
 
 Postgres-only: uses EXTRACT(epoch FROM interval). SQLite (used by tests)
 requires the julianday variant — the tests reimplement the same shape.
@@ -54,7 +64,7 @@ async def merged_state_seconds(
     # event within the window says "in state X". Separate fix — flagged during
     # Bug-2 investigation but left for a follow-up.
     next_ts = func.lead(WorkerEvent.ts).over(
-        partition_by=[WorkerEvent.workstation_id, WorkerEvent.worker_track_id],
+        partition_by=[WorkerEvent.workstation_id],
         order_by=WorkerEvent.ts,
     ).label("next_ts")
     end_ts = func.least(func.coalesce(next_ts, window_end), window_end).label("end_ts")

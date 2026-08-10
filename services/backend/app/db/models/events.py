@@ -12,13 +12,24 @@ def _uuid() -> uuid.UUID:
 
 
 class WorkerEvent(Base):
-    """Time-series of worker state transitions. Partition by `ts` in TimescaleDB."""
+    """Time-series of worker state transitions. Partition by `ts` in TimescaleDB.
+
+    Since the activity engine was re-keyed by workstation (to make AWAY
+    reachable — see activity/main.py), the FSM owns one state series per
+    seat, not per track. `worker_track_id` is written as a sentinel (0) by
+    that path and is NOT part of any duration/dedup partition — intervals.py
+    partitions LEAD() by workstation_id alone, and rollup.workers_idle_too_long
+    ranks per workstation. The column is kept for backward compatibility
+    with historical rows written before the re-key. See ROADMAP change log.
+    """
     __tablename__ = "worker_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid, init=False)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
     camera_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
     workstation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True, default=None)
+    # Sentinel-only under the workstation-keyed FSM (see class docstring).
+    # Historical rows may carry real track IDs; no partition key uses this.
     worker_track_id: Mapped[int] = mapped_column(Integer, default=0)
     state: Mapped[str] = mapped_column(String(32), default="UNKNOWN")  # WORKING|IDLE|AWAY|WAITING_FOR_INPUT|BREAK
     confidence: Mapped[float] = mapped_column(Float, default=0.0)

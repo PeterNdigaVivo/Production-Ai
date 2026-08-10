@@ -130,7 +130,6 @@ async def rollup_window(db: AsyncSession, window_start: datetime,
 class IdleWorker:
     workstation_id: uuid.UUID | None
     camera_id: uuid.UUID
-    worker_track_id: int
     idle_since: datetime
     idle_seconds: float
 
@@ -138,24 +137,29 @@ class IdleWorker:
 async def workers_idle_too_long(db: AsyncSession, threshold_seconds: int,
                                 now: datetime | None = None,
                                 lookback_hours: int = 6) -> list[IdleWorker]:
-    """Workers whose latest event is IDLE and has persisted >= threshold without
-    a later WAITING_FOR_INPUT or WORKING. Uses the most recent event per
-    (camera, workstation, track) as the current state.
+    """Workstations whose latest event is IDLE and has persisted >= threshold
+    without a later WAITING_FOR_INPUT or WORKING. Uses the most recent event
+    per workstation as the current state.
+
+    Partition key. Previously (camera_id, workstation_id, worker_track_id) —
+    but a workstation has exactly one camera (FK, non-nullable, see
+    tenancy.Workstation.camera_id), so camera_id is redundant; and after the
+    AWAY-reachability fix worker_track_id is a sentinel (see intervals.py
+    docstring). Keying on workstation_id alone gives one alert per seat,
+    which is the semantics operators actually want.
     """
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(hours=lookback_hours)
 
-    # rank events per (camera, ws, track) newest-first; row_number==1 is current
+    # Rank events per workstation newest-first; rn==1 is the current state.
     rn = func.row_number().over(
-        partition_by=[WorkerEvent.camera_id, WorkerEvent.workstation_id,
-                      WorkerEvent.worker_track_id],
+        partition_by=[WorkerEvent.workstation_id],
         order_by=WorkerEvent.ts.desc(),
     ).label("rn")
     ranked = (
         select(
             WorkerEvent.camera_id.label("camera_id"),
             WorkerEvent.workstation_id.label("ws"),
-            WorkerEvent.worker_track_id.label("track"),
             WorkerEvent.state.label("state"),
             WorkerEvent.ts.label("ts"),
             rn,
@@ -164,12 +168,11 @@ async def workers_idle_too_long(db: AsyncSession, threshold_seconds: int,
         .cte("ranked")
     )
     current = (
-        select(ranked.c.camera_id, ranked.c.ws, ranked.c.track,
-               ranked.c.state, ranked.c.ts)
+        select(ranked.c.camera_id, ranked.c.ws, ranked.c.state, ranked.c.ts)
         .where(ranked.c.rn == 1)
     )
     out: list[IdleWorker] = []
-    for cam, ws, track, state, ts in (await db.execute(current)).all():
+    for cam, ws, state, ts in (await db.execute(current)).all():
         if state != "IDLE":
             continue
         # Some drivers return tz-naive datetimes; normalise to UTC-aware.
@@ -178,7 +181,7 @@ async def workers_idle_too_long(db: AsyncSession, threshold_seconds: int,
         idle_seconds = (now - ts).total_seconds()
         if idle_seconds >= threshold_seconds:
             out.append(IdleWorker(
-                workstation_id=ws, camera_id=cam, worker_track_id=int(track),
+                workstation_id=ws, camera_id=cam,
                 idle_since=ts, idle_seconds=idle_seconds,
             ))
     return out

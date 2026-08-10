@@ -188,6 +188,40 @@ remains the single source of truth. Newest first; the roadmap phases stay
 narrative, this section stays factual (one entry per landed commit or short
 group of commits).
 
+### 10 August 2026 — Activity FSM re-keyed to workstation; AWAY reachable
+
+**Bug (Phase 3 blocker sitting inside Phase 1).** `productivity = WORKING / (WORKING + IDLE + AWAY)` returned the same number for a station worked continuously and a station empty for three hours, because AWAY events were never emitted. `ActivitySignals.present` defaulted to `True` and the activity handler iterated the frame's `payload["tracks"]` — a vanished operator's track simply stopped arriving, `fsm.update()` was never called for it, and the FSM never confirmed AWAY. Absence is a property of the **seat**, not of the track.
+
+**Fix.**
+- **Tracking engine** (`services/tracking-engine/tracking/main.py`) now publishes a `workstations` roster alongside each frame's tracks on `stream:tracks:<camera_id>`. The roster is the set of distinct `workstation_id` values from `cam_zones` — computed in the same block that feeds `assign_workstation`, with a structural invariant comment so the two cannot drift. Roster is any-kind (not seat-only) because `POST /api/v1/zones` accepts any kind for any workstation and the zone editor will use it; a machine zone drawn before a seat zone would open a silent-drop hole under a seat-only roster.
+- **Activity engine** (`services/activity-engine/activity/main.py`) FSM registry is now `dict[str, WorkerActivityFSM]` keyed by `workstation_id`. It iterates the ROSTER, sets `present=True` if a track is assigned there this frame (highest-conf wins under multi-track occlusion, logged at debug), else `present=False`. The existing 60s time-weighted debounce handles absence exactly as it handles every other state.
+- **Pipeline-outage guard.** If the gap between successive tracks payloads exceeds `3 × (1 / DETECTION_TARGET_FPS)`, the handler holds state and logs a warning. Recording an operator as AWAY because ffmpeg dropped is exactly the kind of number that destroys dashboard trust.
+- **Aisle walkers.** Tracks with `workstation_id=None` never drive any FSM. A person walking the aisle is not an operator.
+- **Registry bound.** Workstations no longer on the roster (seat deleted, seat re-zoned) get their FSM and centroid evicted. This also closes the old unbounded-growth issue that track-keyed dicts had under track-ID churn.
+- **`worker_track_id` becomes a sentinel.** The FSM is now workstation-keyed, so there is no owning track for AWAY (the absence of a track IS the event); Option B was not viable — LEAD partitioned by `(workstation_id, worker_track_id)` would leave the WORKING interval unterminated while AWAY started a fresh partition, double-counting at exactly the transitions this fix creates.
+  - `intervals.py`: LEAD now partitions on `workstation_id` alone.
+  - `rollup.workers_idle_too_long`: ranks per workstation (a workstation belongs to exactly one camera per the non-nullable FK, so camera_id was redundant too).
+  - `workers/tasks.check_idle_workers`: dedup key changed to `"{camera_id}:{workstation_id}"` — per-seat is the correct semantics, not a migration artefact.
+  - `worker_events.worker_track_id` retained as audit-only metadata; docstring updated on the model.
+- **Historical rows.** Not backfilled. Historical windows will still show zero AWAY. Rows written by the old track-keyed FSM re-summarize under the new workstation-alone LEAD partition; the union-of-intervals safety net stays for that and for accidental same-ts double writes.
+
+**Tests (7 new + 4 updated).**
+- New `services/activity-engine/tests/test_state_machine.py` — first tests the FSM has ever had. Covers: sustained absence → AWAY; brief absence < debounce → no flip; AWAY→WORKING on return; `machine_running=True` + `present=False` still resolves to AWAY (the `_candidate` present-check wins); time-weighted vote ignores a 30fps AWAY burst against a 50s WORKING baseline; `total >= 3.0` evidence floor guard; stable WORKING happy path.
+- Updated: `test_intervals_overlap.py`, `test_rollup.py`, `test_analytics.py` — LEAD partition switched to `workstation_id` alone; two assertions that encoded the old per-track chaining were re-derived under the new partition (WAITING slice terminates at the next event; two-track chains no longer skip over an interleaved AWAY).
+
+**Reporting scope — what actually works today.** AWAY is now emitted for absences **shorter than the query window**. Long absences remain invisible because their single AWAY event falls outside the queried window and the intervals CTE only sees `ts >= window_start` (HANDOFF Deferred #1). The longer a seat is empty, the more likely its lone AWAY event has already fallen out of any short recent window — the true-north case (a three-hour empty seat) is exactly the shape this partial fix misses. **Cross-window under-count is promoted from Deferred to a hard prerequisite for trusting any productivity figure, and is the next task.** When it lands, do it as the CTE fix, not the Deferred #3 snapshot rows: snapshots touch every downstream consumer and break the transitions-only semantics lesson #2 rests on; the CTE fix is contained in one function.
+
+**Free accuracy evidence for later, do NOT build here.** AWAY co-occurring with `machine_running=True` is a strong false-AWAY signal (operator present but undetected) — worth surfacing on the Phase 3 event-review screen. Logged; not implemented.
+
+**Known items filed alongside this fix.**
+- Activity-engine `amain()` never cancels stale camera tasks (mirror of the same shape in tracking). Not folded in here because distinguishing "camera task genuinely gone" from "camera task holding state through a pipeline outage" — the exact semantics the outage guard depends on — is its own design question.
+
+**Migration.** None. Code-only.
+
+**Deploy note.** Acknowledge any open `worker_idle` alerts before deploying — old payloads carry the track-shaped dedup key and would collide with the new shape until they auto-close.
+
+Commit: `feat(activity): key FSM to workstation, make AWAY reachable`.
+
 ### 4 August 2026 (pm) — Promotion pipeline live end-to-end
 
 Onboarding loop `discover → review → promote` proved out for the first

@@ -63,6 +63,12 @@ Turn CCTV over sewing lines into an operational dashboard for supervisors.
   longer publish; union-of-intervals per station replaces sum-of-tracks
   in rollup + analytics. See `ROADMAP.md` for the failure signatures
   (`y=-4009`, `2796s in a 300s window`).
+- **AWAY reachable — for short absences only.** Activity FSM re-keyed to
+  workstation (10 Aug entry). AWAY now emits when a seat is empty for
+  longer than the debounce window. **Productivity numbers over any
+  window shorter than the seat's absence still hide it** — that's the
+  cross-window under-count now promoted from Deferred #1 to the next
+  task. Do NOT describe productivity as trustworthy until that lands.
 
 ---
 
@@ -148,11 +154,15 @@ Compact. Longer stories are in the `ROADMAP.md` change log.
 
 ## Deferred (flagged, not doing yet)
 
-1. **Cross-window interval under-count** in `intervals.py` — a state
-   started before `window_start` and still open at it contributes zero.
-   Documented `TODO` in the CTE. **Must be resolved no later than
-   Phase 3** (the "numbers you'd defend in a management meeting"
-   phase).
+1. ~~**Cross-window interval under-count**~~ **PROMOTED FROM DEFERRED — NEXT
+   TASK.** With the workstation-keyed FSM shipping AWAY events (see 10 Aug
+   change-log entry), an empty seat now emits one AWAY transition and
+   then stays silent for the whole absence. A supervisor asking about a
+   three-hour empty seat over any short recent window gets "no data" —
+   the exact true-north case, silently missed. Fix as the CTE
+   modification, not the Deferred #3 snapshot rows (which break the
+   transitions-only semantics that lesson #2 rests on). Contained in
+   `services/backend/app/services/intervals.py::merged_state_seconds`.
 2. **`POST /api/v1/zones` layout_version bug.** The endpoint bumps
    *before* insert, so a first-ever zone via the API lands at
    `layout_version=2`, not 1. Scripts sidestep by setting `1`

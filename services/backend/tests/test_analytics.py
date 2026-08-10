@@ -40,9 +40,16 @@ def _at(sec: float) -> datetime:
 
 
 async def _durations(conn, ws_ids, since):
-    """Mirror of app.services.analytics duration query (SQLite seconds variant)."""
+    """Mirror of app.services.analytics duration query (SQLite seconds variant).
+
+    LEAD partitions on workstation_id alone — matches the production change
+    that shipped with the AWAY-reachability fix (see intervals.py docstring).
+    Kept as a naive per-workstation reconstruction (no union-of-islands) so
+    the tests below can highlight what changed relative to the historic
+    per-track behaviour.
+    """
     next_ts = func.lead(worker_events.c.ts).over(
-        partition_by=[worker_events.c.workstation_id, worker_events.c.worker_track_id],
+        partition_by=[worker_events.c.workstation_id],
         order_by=worker_events.c.ts,
     ).label("next_ts")
     intervals = (
@@ -98,8 +105,30 @@ async def test_durations_and_fairness_single_worker(conn):
 
 @pytest.mark.asyncio
 async def test_two_tracks_same_station_partitioned(conn):
-    """Two different workers on one station must be reconstructed separately,
-    not chained into one another's intervals."""
+    """Post-fix (workstation-alone LEAD partition), events at one seat chain
+    strictly by timestamp regardless of which track wrote them. The scenario
+    below is a historical row shape — the workstation-keyed FSM cannot
+    produce two concurrent WORKING streams at one seat live, so this test
+    exists purely to pin the historical-row reconstruction.
+
+    Events sorted by ts (t=0 is NOW):
+      -600 WORKING (t1)
+      -300 AWAY    (t2)
+      -100 WORKING (t2)
+       -60 WORKING (t1)
+    Under LEAD partition by workstation alone:
+      [-600,-300) WORKING = 300s
+      [-300,-100) AWAY    = 200s
+      [-100, -60) WORKING =  40s
+      [ -60, NOW) WORKING =  60s
+    Totals: WORKING = 400s, AWAY = 200s.
+
+    Pre-fix (partition by ws+track) this asserted WORKING=700s because
+    track 1's WORKING chain skipped over track 2's AWAY entirely. That was
+    the exact class of over-count the union-of-intervals safety net was
+    introduced to catch, and the safety net is still there for anything
+    the naive query might mis-count.
+    """
     rows = [
         dict(ts=_at(600), workstation_id="A", worker_track_id=1, state="WORKING"),
         dict(ts=_at(60),  workstation_id="A", worker_track_id=1, state="WORKING"),
@@ -108,9 +137,8 @@ async def test_two_tracks_same_station_partitioned(conn):
     ]
     await conn.execute(insert(worker_events), rows)
     d = await _durations(conn, ["A"], _at(100000))
-    # track1 WORKING 600->now = 600 ; track2 WORKING 100->now = 100 -> 700
-    assert d["WORKING"] == pytest.approx(700, abs=1.0)
-    assert d["AWAY"] == pytest.approx(200, abs=0.5)  # 300 - 100
+    assert d["WORKING"] == pytest.approx(400, abs=1.0)
+    assert d["AWAY"] == pytest.approx(200, abs=0.5)
 
 
 @pytest.mark.asyncio

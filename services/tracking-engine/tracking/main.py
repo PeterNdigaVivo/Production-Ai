@@ -78,6 +78,21 @@ def _make_handler(redis: Redis, zones: ZoneCache, camera_id: str, out_tracks: st
         frame_h = int(payload.get("h") or 0)
 
         track_records = []
+        # Publish the workstation ROSTER for this camera alongside the tracks
+        # so the activity engine can key its FSM by workstation_id and emit
+        # AWAY when a seat is empty.
+        # INVARIANT: the roster must EXACTLY equal the set of workstation_ids
+        # `assign_workstation` can return for this camera. Smaller → silent
+        # drops (a track attributed to a workstation the FSM never evaluates).
+        # Larger → phantom permanent AWAY dragging productivity down. Derived
+        # from the same `cam_zones` list `assign_workstation` reads, in the
+        # same block, so the two cannot drift when someone edits one of them.
+        # NOT hypothetical: POST /api/v1/zones accepts any kind for any
+        # workstation with no seat requirement, and the zone editor will use
+        # that endpoint — a machine zone drawn before a seat zone opens the
+        # hole. Include every distinct workstation_id, regardless of kind.
+        workstations_roster = sorted({ws_id for ws_id, _kind, _poly in cam_zones})
+
         for t in tracks:
             clamped = _valid_and_clamp(t.xyxy, frame_w, frame_h)
             if clamped is None:
@@ -107,6 +122,10 @@ def _make_handler(redis: Redis, zones: ZoneCache, camera_id: str, out_tracks: st
             "camera_id": camera_id,
             "ts": payload.get("ts", time.time()),
             "tracks": track_records,
+            # Workstation roster (see the block above assigning it) — required
+            # by the activity engine to emit AWAY on empty seats. Existing
+            # consumers that don't read "workstations" are unaffected.
+            "workstations": workstations_roster,
             # forward the per-workstation machine-running map (Step 8) so the
             # activity FSM downstream can make WORKING/IDLE fair. Absent if the
             # detection engine isn't computing it (MACHINE_FLOW_ENABLED=false).

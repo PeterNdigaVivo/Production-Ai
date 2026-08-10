@@ -45,8 +45,10 @@ async def conn():
 
 
 async def _window_durations(conn, win_start, win_end):
+    # LEAD partitions on workstation_id alone — matches the production
+    # change that shipped with the AWAY-reachability fix. See intervals.py.
     next_ts = func.lead(we.c.ts).over(
-        partition_by=[we.c.workstation_id, we.c.worker_track_id],
+        partition_by=[we.c.workstation_id],
         order_by=we.c.ts).label("next_ts")
     intervals = (
         select(we.c.workstation_id.label("ws"), we.c.state.label("state"),
@@ -90,42 +92,53 @@ async def test_rollup_interval_clamped_to_window(conn):
 
 
 async def _idle_too_long(conn, threshold, now=NOW):
+    # rank per workstation (see rollup.workers_idle_too_long docstring for
+    # why camera_id and worker_track_id are no longer partition keys).
     rn = func.row_number().over(
-        partition_by=[we.c.camera_id, we.c.workstation_id, we.c.worker_track_id],
+        partition_by=[we.c.workstation_id],
         order_by=we.c.ts.desc()).label("rn")
-    ranked = select(we.c.worker_track_id.label("track"), we.c.state.label("state"),
+    ranked = select(we.c.workstation_id.label("ws"), we.c.state.label("state"),
                     we.c.ts.label("ts"), rn).cte("ranked")
-    current = select(ranked.c.track, ranked.c.state, ranked.c.ts).where(ranked.c.rn == 1)
+    current = select(ranked.c.ws, ranked.c.state, ranked.c.ts).where(ranked.c.rn == 1)
     out = []
-    for track, state, ts in (await conn.execute(current)).all():
+    for ws_id, state, ts in (await conn.execute(current)).all():
         if state != "IDLE":
             continue
         secs = (now - _aware(ts)).total_seconds()
         if secs >= threshold:
-            out.append((track, int(secs)))
+            out.append((ws_id, int(secs)))
     return sorted(out)
 
 
 @pytest.mark.asyncio
 async def test_idle_debounce_only_alerts_past_threshold(conn):
-    cam, ws = "cam-1", "ws-1"
+    """Post-fix per-workstation ranking: the workstation's LATEST event wins,
+    regardless of which track wrote it. Here the most recent event at ws-1
+    is WORKING at -30s (via track 12), so the seat is not idle — no alert.
+    ws-2's latest is IDLE at -200s (via track 10), so it fires."""
+    cam = "cam-1"
     await conn.execute(insert(we), [
-        dict(ts=_at(400), camera_id=cam, workstation_id=ws, worker_track_id=10, state="WORKING"),
-        dict(ts=_at(200), camera_id=cam, workstation_id=ws, worker_track_id=10, state="IDLE"),    # 200s idle
-        dict(ts=_at(60),  camera_id=cam, workstation_id=ws, worker_track_id=11, state="IDLE"),    # 60s idle
-        dict(ts=_at(30),  camera_id=cam, workstation_id=ws, worker_track_id=12, state="WORKING"), # working
+        # ws-2: WORKING → IDLE 200s ago, no return. Should alert.
+        dict(ts=_at(400), camera_id=cam, workstation_id="ws-2", worker_track_id=10, state="WORKING"),
+        dict(ts=_at(200), camera_id=cam, workstation_id="ws-2", worker_track_id=10, state="IDLE"),
+        # ws-1: brief IDLE followed by WORKING. Seat is not currently idle.
+        dict(ts=_at(60),  camera_id=cam, workstation_id="ws-1", worker_track_id=11, state="IDLE"),
+        dict(ts=_at(30),  camera_id=cam, workstation_id="ws-1", worker_track_id=12, state="WORKING"),
     ])
     idle = await _idle_too_long(conn, threshold=180)
-    assert idle == [(10, 200)]  # only worker 10; 11 too brief, 12 not idle
+    assert idle == [("ws-2", 200)]
 
 
 @pytest.mark.asyncio
 async def test_idle_resolved_when_back_to_working(conn):
-    """A worker who was idle but whose LATEST event is WORKING must not alert."""
+    """A workstation whose LATEST event is WORKING must not alert — even if
+    the WORKING event was written by a different track ID (post-fix: the
+    ranking key is the workstation, not the track)."""
     cam, ws = "cam-1", "ws-1"
     await conn.execute(insert(we), [
         dict(ts=_at(500), camera_id=cam, workstation_id=ws, worker_track_id=20, state="IDLE"),
-        dict(ts=_at(40),  camera_id=cam, workstation_id=ws, worker_track_id=20, state="WORKING"),
+        # returning worker got a new track ID after re-detection — same seat.
+        dict(ts=_at(40),  camera_id=cam, workstation_id=ws, worker_track_id=21, state="WORKING"),
     ])
     idle = await _idle_too_long(conn, threshold=180)
-    assert idle == []  # latest state is WORKING, so no idle alert
+    assert idle == []

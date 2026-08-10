@@ -69,8 +69,16 @@ async def _check_idle_workers_async():
         if not idle:
             return
         for w in idle:
-            key = f"{w.camera_id}:{w.worker_track_id}"
-            # de-dup: skip if an unacknowledged idle alert already open for this worker
+            # De-dup key. Was `{camera_id}:{worker_track_id}` — per-track
+            # dedup was always fragile (ByteTrack re-ids after occlusion or
+            # AWAY-return would break it), and after the FSM re-key to
+            # workstation there is no owning track anyway. Per-seat is the
+            # correct semantics: one open alert per idle workstation.
+            # DEPLOY NOTE: acknowledge any open `worker_idle` alerts before
+            # deploying this — old payloads carry the track-shaped key and
+            # would dedup-collide with the new shape until they auto-close.
+            key = f"{w.camera_id}:{w.workstation_id}"
+            # de-dup: skip if an unacknowledged idle alert already open for this seat
             existing = (await db.execute(
                 select(Alert).where(and_(
                     Alert.kind == "worker_idle",
@@ -84,14 +92,13 @@ async def _check_idle_workers_async():
                 kind="worker_idle",
                 title="Worker idle past threshold",
                 description=(
-                    f"track={w.worker_track_id} camera={w.camera_id} "
+                    f"workstation={w.workstation_id} camera={w.camera_id} "
                     f"idle for {int(w.idle_seconds)}s"
                 ),
                 payload={
                     "worker_key": key,
                     "camera_id": str(w.camera_id),
                     "workstation_id": str(w.workstation_id) if w.workstation_id else None,
-                    "worker_track_id": w.worker_track_id,
                     "idle_since": w.idle_since.isoformat(),
                     "idle_seconds": int(w.idle_seconds),
                 },
