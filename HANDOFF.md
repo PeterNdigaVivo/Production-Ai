@@ -63,12 +63,18 @@ Turn CCTV over sewing lines into an operational dashboard for supervisors.
   longer publish; union-of-intervals per station replaces sum-of-tracks
   in rollup + analytics. See `ROADMAP.md` for the failure signatures
   (`y=-4009`, `2796s in a 300s window`).
-- **AWAY reachable — for short absences only.** Activity FSM re-keyed to
+- **AWAY reachable — with two known holes.** Activity FSM re-keyed to
   workstation (10 Aug entry). AWAY now emits when a seat is empty for
-  longer than the debounce window. **Productivity numbers over any
-  window shorter than the seat's absence still hide it** — that's the
-  cross-window under-count now promoted from Deferred #1 to the next
-  task. Do NOT describe productivity as trustworthy until that lands.
+  longer than the debounce window, but productivity is still unreliable
+  in two shapes: **(a)** absences longer than the query window (the
+  lone AWAY event falls before `window_start`); **(b)** any window
+  containing a pipeline outage (no events written during the outage →
+  `LEAD(ts)` attributes the whole gap to the pre-outage state, so a
+  30-minute ffmpeg drop on a WORKING seat reads as 30 minutes of
+  WORKING). Both are the same failure family — the interval math has
+  no way to say what an *absence of events* means. Now the next task,
+  scoped as "what does a gap in worker_events mean?". Do NOT describe
+  productivity as trustworthy until it lands.
 
 ---
 
@@ -164,13 +170,25 @@ Compact. Longer stories are in the `ROADMAP.md` change log.
 ## Deferred (flagged, not doing yet)
 
 1. ~~**Cross-window interval under-count**~~ **PROMOTED FROM DEFERRED — NEXT
-   TASK.** With the workstation-keyed FSM shipping AWAY events (see 10 Aug
-   change-log entry), an empty seat now emits one AWAY transition and
-   then stays silent for the whole absence. A supervisor asking about a
-   three-hour empty seat over any short recent window gets "no data" —
-   the exact true-north case, silently missed. Fix as the CTE
-   modification, not the Deferred #3 snapshot rows (which break the
-   transitions-only semantics that lesson #2 rests on). Contained in
+   TASK, expanded scope.** Reframed as **"what does a gap in
+   `worker_events` mean?"** — one task, two shapes of the same failure
+   family:
+   * **Long absences across window edges.** An AWAY event before
+     `window_start` is invisible, so a three-hour empty seat over any
+     short recent window reads as "no data" — the exact true-north
+     case.
+   * **Pipeline outages inside a window.** No events are written
+     during an outage; `LEAD(ts)` closes the pre-outage interval at
+     the next arriving event, so the whole outage gets attributed to
+     the pre-outage state. A 30-minute ffmpeg drop on a WORKING seat
+     reads as 30 minutes of WORKING. The 12 Aug activity-engine
+     outage guard fixes the *debounce vote*, nothing in the duration
+     query.
+   Fix as the CTE modification, not the Deferred #3 snapshot rows
+   (which break the transitions-only semantics that lesson #2 rests
+   on). **Design proposal required before implementation** —
+   the obvious synthesise-a-gap-marker move IS Deferred #3 in
+   disguise. Contained in
    `services/backend/app/services/intervals.py::merged_state_seconds`.
 2. **`POST /api/v1/zones` layout_version bug.** The endpoint bumps
    *before* insert, so a first-ever zone via the API lands at
